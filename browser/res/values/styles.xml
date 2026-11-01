@@ -6,5 +6,5 @@
         <item name="android:colorAccent">#FFFFB01F</item>
     </style>
     <color name="canvas">#FF0B0B0D</color>
-    <color name="icon_bg">#FFF4EFEC</color>
+    <color name="icon_bg">#FFD62834</color>
 </resources>

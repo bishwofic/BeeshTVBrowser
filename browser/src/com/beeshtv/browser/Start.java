@@ -508,6 +508,10 @@ final class Start extends FrameLayout {
         title("Tabs", open.isEmpty() ? null : open.size() + " open");
         row(R.drawable.ic_plus, "New tab", null, false, () -> b.newTab());
         gap();
+        if (!open.isEmpty()) row(R.drawable.ic_close, "Close all tabs", null, false, () -> {
+            b.closeAllTabs();
+            show(Page.TABS);
+        });
         if (open.isEmpty()) note("Sites you open show up here, so you can switch between them.");
         for (BrowserActivity.Tab t : open) {
             boolean current = t == b.currentTab();

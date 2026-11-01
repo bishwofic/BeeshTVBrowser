@@ -79,7 +79,9 @@ public class BrowserActivity extends Activity {
     static final String[] MODES = {"TV", "Desktop"};
     static final int TV = 0, DESKTOP = 1;
     /** Text size in TV mode, as a percentage: readable from the couch without breaking layouts. */
-    static final int TV_TEXT = 115;
+    static final int TV_TEXT = 100;
+    /** Width pages are laid out at (then fitted to the screen): a desktop layout in both modes. */
+    static final int TV_WIDTH = 1280, DESKTOP_WIDTH = 1280;
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
     static final int REQ_VOICE = 7, REQ_MIC = 8;
     /** Each open page takes memory on a TV that has little; more than this and pages start reloading. */
@@ -138,7 +140,8 @@ public class BrowserActivity extends Activity {
     /** The current tab's page. */
     private WebView web;
 
-    private String mobileUA, desktopUA;
+    /** TV mode: the TV's own Chrome, minus "Mobile" so sites send their full version. Desktop: Chrome on Windows. */
+    private String tvUA, desktopUA;
     /** The D-pad is moving between the bar's buttons (after Menu) rather than the pointer. */
     private boolean inBar;
     private long touchDownAt, backAt, hoverAt;
@@ -163,11 +166,12 @@ public class BrowserActivity extends Activity {
         String base = WebSettings.getDefaultUserAgent(this);
         // The stock WebView agent says "wv" and "Version/4.0", which some sites treat as a lesser
         // browser; without them it reads as Chrome on Android. Desktop mode reads as Chrome on Linux.
-        mobileUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "");
+        tvUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "").replace(" Mobile", "");
         Matcher m = Pattern.compile("Chrome/([\\d.]+)").matcher(base);
         String chrome = m.find() ? m.group(1) : "124.0.0.0";
-        desktopUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome
-                + " Safari/537.36";
+        String major = chrome.contains(".") ? chrome.substring(0, chrome.indexOf('.')) : chrome;
+        desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+                + major + ".0.0.0 Safari/537.36";
 
         // Pages under the bar; the start screen over both; the pointer over everything.
         int barTop = dp(16), barH = dp(56), pageTop = barTop + barH + dp(12);
@@ -407,9 +411,9 @@ public class BrowserActivity extends Activity {
             return adblock.enabled() && !adsAllowed(h) && !adsAllowed("youtube.com");
         }
 
-        /** Asked by the page as it starts: should it lay out like a computer screen? */
-        @JavascriptInterface public boolean desktop(String host) {
-            return desktopFor(host == null ? null : host.startsWith("www.") ? host.substring(4) : host);
+        /** Asked by the page as it starts: how wide to lay itself out before fitting to the screen. */
+        @JavascriptInterface public int layoutWidth(String host) {
+            return desktopFor(host == null ? null : History.hostOf("https://" + host)) ? DESKTOP_WIDTH : TV_WIDTH;
         }
 
         /** Asked by the page before it fetches: would this be blocked here? Answers at once. */
@@ -446,7 +450,7 @@ public class BrowserActivity extends Activity {
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setAllowFileAccess(false);
-        s.setUserAgentString(mobileUA);
+        s.setUserAgentString(tvUA);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
         // WebView tells every site which app it's in (X-Requested-With); players use it to refuse
@@ -462,6 +466,11 @@ public class BrowserActivity extends Activity {
                 Uri u = r.getUrl();
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
                 if (!scheme.equals("http") && !scheme.equals("https")) return openElsewhere(u.toString());
+                // Never the phone version of a site.
+                if (r.isForMainFrame()) {
+                    String full = fullSite(u.toString());
+                    if (!full.equals(u.toString())) { applyAgentFor(v, full); v.loadUrl(full); return true; }
+                }
                 // Switching between the phone and desktop agent means loading the page afresh.
                 if (r.isForMainFrame() && applyAgentFor(v, u.toString())) { v.loadUrl(u.toString()); return true; }
                 return false;
@@ -580,6 +589,8 @@ public class BrowserActivity extends Activity {
         }
         if (popupsBlocked()) script = "window.__beeshtvBlockPopups = true;\n" + script;
         if (lighterPages()) script = "window.__beeshtvLight = true;\n" + script;
+        script = "window.__beeshtvScreen = " + Math.round(getResources().getDisplayMetrics().widthPixels
+                / getResources().getDisplayMetrics().density) + ";\n" + script;
         t.frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
     }
 
@@ -687,16 +698,57 @@ public class BrowserActivity extends Activity {
         return true;
     }
 
-    /** Type or say anything: a web address opens, the rest is searched. */
-    void open(String text) { load(searchOrUrl(text)); }
-    void openUrl(String url) { load(url); }
+    /** From Home or History: in a new tab, so the site you had open stays where it was. */
+    void open(String text) { openInNewTab(searchOrUrl(text)); }
+    void openUrl(String url) { openInNewTab(url); }
+
+    private void openInNewTab(String url) {
+        if (!tab.empty()) {
+            if (tabs.size() < MAX_TABS) select(addTab());
+            else toast("Opened in this tab. " + MAX_TABS + " is the most this TV keeps open");
+        }
+        load(url);
+    }
+
+    void closeAllTabs() {
+        for (Tab t : new ArrayList<>(tabs)) {
+            if (t.web != null) { pages.removeView(t.web); t.web.destroy(); }
+        }
+        tabs.clear();
+        tab = null;
+        select(addTab());
+        saveTabs();
+        refreshBar();
+    }
 
     private void load(String url) {
+        url = fullSite(url);
         hideStart();
         applyAgentFor(web, url);
         web.loadUrl(url);
         address.setText(shown(url));
         exitBar();
+    }
+
+    /** How often each phone-site host was sent back to; past a few, it's a phone-only site and left alone. */
+    private final java.util.Map<String, Integer> mobileTries = new java.util.HashMap<>();
+
+    /**
+     * The full version of a phone-site address: m.youtube.com becomes www.youtube.com and
+     * en.m.wikipedia.org becomes en.wikipedia.org.
+     */
+    String fullSite(String url) {
+        Uri u = Uri.parse(url);
+        String h = u.getHost();
+        if (h == null) return url;
+        String to = null;
+        if (h.startsWith("m.") && h.indexOf('.', 2) > 0) to = "www." + h.substring(2);
+        else if (h.contains(".m.")) to = h.replaceFirst("\\.m\\.", ".");
+        else if (h.startsWith("mobile.") && h.indexOf('.', 7) > 0) to = "www." + h.substring(7);
+        if (to == null) return url;
+        int tries = mobileTries.merge(h, 1, Integer::sum);
+        if (tries > 3) return url;
+        return u.buildUpon().encodedAuthority(to + (u.getPort() > 0 ? ":" + u.getPort() : "")).build().toString();
     }
 
     /** A web address opens as is (https:// added); anything else is searched. */
@@ -735,15 +787,16 @@ public class BrowserActivity extends Activity {
     /** Sets the user agent (and text size) this address wants; true if the agent changed. */
     private boolean applyAgentFor(WebView w, String url) {
         boolean desktop = desktopFor(hostOf(url));
-        String want = desktop ? desktopUA : mobileUA;
+        String want = desktop ? desktopUA : tvUA;
         WebSettings s = w.getSettings();
         s.setTextZoom(desktop ? 100 : TV_TEXT);
         // Chrome also tells sites "mobile, Android" in separate hints; desktop has to change those too.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
             if (tvHints == null) {
                 tvHints = WebSettingsCompat.getUserAgentMetadata(s);
+                tvHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints).setMobile(false).build();
                 desktopHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints)
-                        .setMobile(false).setPlatform("Linux").setPlatformVersion("").setModel("")
+                        .setMobile(false).setPlatform("Windows").setPlatformVersion("10.0.0").setModel("")
                         .setArchitecture("x86").setBitness(64).build();
             }
             WebSettingsCompat.setUserAgentMetadata(s, desktop ? desktopHints : tvHints);

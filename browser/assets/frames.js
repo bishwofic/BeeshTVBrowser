@@ -137,23 +137,40 @@
     setInterval(function () { if (paused.length || anyPlaying()) settle(); }, 3000);
   }
 
-  // 6. Desktop sites: lay the page out for a laptop screen, not the TV's narrow phone-style width.
-  if (window.top === window && window.BeeshTVInput && BeeshTVInput.desktop && BeeshTVInput.desktop(location.hostname)) {
-    var wide = function () {
-      var m = document.querySelector('meta[name="viewport"]');
-      if (!m) {
-        if (!document.head) return;
-        m = document.createElement('meta');
+  // 6. Every site in its full desktop layout, fitted to the screen at 100%: the TV is only 960 points
+  //    wide, below where sites switch to desktop, so the page's viewport is set to the width the browser
+  //    asks for (1280, a laptop's) and zoomed to fill the screen exactly. The
+  //    page's own viewport tag is rewritten the moment it appears, so nothing jumps.
+  if (window.top === window && window.BeeshTVInput && BeeshTVInput.layoutWidth) {
+    var layout = BeeshTVInput.layoutWidth(location.hostname);
+    var screenW = window.__beeshtvScreen || screen.width;
+    if (layout > 0) {
+      var want = 'width=' + layout + ',initial-scale=' + (Math.round(screenW / layout * 1000) / 1000)
+          + ',minimum-scale=0.25,maximum-scale=5,user-scalable=yes';
+      var fix = function (m) { if (m.content !== want) m.content = want; };
+      var ensure = function () {
+        var ms = document.querySelectorAll('meta[name="viewport"]');
+        if (ms.length) { for (var i = 0; i < ms.length; i++) fix(ms[i]); return; }
+        var head = document.head || document.documentElement;
+        if (!head) return;
+        var m = document.createElement('meta');
         m.name = 'viewport';
-        document.head.appendChild(m);
-      }
-      // A 1280-wide laptop layout, zoomed to fill the TV's width.
-      var want = 'width=1280,initial-scale=' + (Math.round(screen.width / 1280 * 1000) / 1000);
-      if (m.content !== want) m.content = want;
-    };
-    document.addEventListener('DOMContentLoaded', wide);
-    window.addEventListener('load', wide);
-    setTimeout(wide, 1500);
+        m.content = want;
+        head.appendChild(m);
+      };
+      ensure();
+      new MutationObserver(function (changes) {
+        for (var i = 0; i < changes.length; i++) {
+          var c = changes[i];
+          if (c.type === 'attributes') { if (c.target.name === 'viewport') fix(c.target); continue; }
+          for (var k = 0; k < c.addedNodes.length; k++) {
+            var n = c.addedNodes[k];
+            if (n.tagName === 'META' && n.name === 'viewport') fix(n);
+          }
+        }
+      }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['content'] });
+      document.addEventListener('DOMContentLoaded', ensure);
+    }
   }
 
   // 7. YouTube's own ads (the ones inside videos), as Brave and uBlock Origin do it: the player is
