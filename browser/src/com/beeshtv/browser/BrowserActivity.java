@@ -149,6 +149,9 @@ public class BrowserActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        // The TV's own keyboard never opens here: ours types into every field, and pages that ask for
+        // the TV's would get its "use the keyboard on your mobile device" panel over the page instead.
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
         sp = getSharedPreferences("browser", MODE_PRIVATE);
         // Once, from the version with a Browsing mode setting: every site back to TV mode.
         if (!sp.getBoolean("modes_reset", false)) {
@@ -168,8 +171,11 @@ public class BrowserActivity extends Activity {
 
         String base = WebSettings.getDefaultUserAgent(this);
         // The stock WebView agent says "wv" and "Version/4.0", which some sites treat as a lesser
-        // browser; without them it reads as Chrome on Android. Desktop mode reads as Chrome on Linux.
-        tvUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "").replace(" Mobile", "");
+        // browser; without them it reads as Chrome on Android. The TV's model goes too, as in Chrome's
+        // own agent ("K"): a model like "Smart TV Pro" gets Google's remote-control pages, which
+        // want the TV's keyboard and ignore ours. Desktop mode reads as Chrome on Windows.
+        tvUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "").replace(" Mobile", "")
+                .replaceFirst("\\(Linux; Android ([\\d.]+);[^)]*\\)", "(Linux; Android $1; K)");
         Matcher m = Pattern.compile("Chrome/([\\d.]+)").matcher(base);
         String chrome = m.find() ? m.group(1) : "124.0.0.0";
         String major = chrome.contains(".") ? chrome.substring(0, chrome.indexOf('.')) : chrome;
@@ -436,6 +442,8 @@ public class BrowserActivity extends Activity {
 
     private WebView buildWebView(Tab t) {
         WebView w = new PageView(this);
+        // No frame around the page when it has focus: the pointer shows where you are.
+        w.setDefaultFocusHighlightEnabled(false);
         w.addJavascriptInterface(new InputBridge(t), "BeeshTVInput");
         w.setBackgroundColor(Ui.BG);
         w.setFocusable(true);
@@ -511,8 +519,6 @@ public class BrowserActivity extends Activity {
                 readColor(t, v);
                 // Kept as it goes, so tabs survive the app being stopped without warning (updates).
                 saveTabs();
-                // TV mode: a clear glow around whatever has keyboard focus on the page.
-                if (!desktopFor(hostOf(url))) v.evaluateJavascript(FOCUS_GLOW, null);
                 applyZoom(v);
                 if (t == tab) refreshBar();
             }
@@ -615,11 +621,6 @@ public class BrowserActivity extends Activity {
             + "if(m&&m.content)return m.content;var b=document.body&&getComputedStyle(document.body).backgroundColor;"
             + "if(!b||b==='transparent'||/rgba\\(0, 0, 0, 0\\)/.test(b))b=getComputedStyle(document.documentElement).backgroundColor;"
             + "return b||'';})()";
-
-    private static final String FOCUS_GLOW = "(function(){if(document.getElementById('beeshtv-focus'))return;"
-            + "var s=document.createElement('style');s.id='beeshtv-focus';"
-            + "s.textContent=':focus-visible{outline:3px solid #e5484d!important;outline-offset:2px!important}';"
-            + "(document.head||document.documentElement).appendChild(s);})()";
 
     /** Reads the website's colour; the bar follows it while that tab is shown. */
     private void readColor(Tab t, WebView v) {
@@ -800,7 +801,7 @@ public class BrowserActivity extends Activity {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
             if (tvHints == null) {
                 tvHints = WebSettingsCompat.getUserAgentMetadata(s);
-                tvHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints).setMobile(false).build();
+                tvHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints).setMobile(false).setModel("").build();
                 desktopHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints)
                         .setMobile(false).setPlatform("Windows").setPlatformVersion("10.0.0").setModel("")
                         .setArchitecture("x86").setBitness(64).build();

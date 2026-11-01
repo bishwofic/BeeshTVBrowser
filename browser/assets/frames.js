@@ -63,6 +63,13 @@
   if (window.BeeshTVInput) {
     document.addEventListener('focusin', function (e) { if (typable(e.target)) BeeshTVInput.focus(); }, true);
     document.addEventListener('focusout', function (e) { if (typable(e.target)) BeeshTVInput.blur(); }, true);
+    // Typing on our keyboard arrives as key presses, which make the engine draw its focus ring round
+    // whatever has focus. A pointer needs none, as with a mouse; a site's own focus styles still win,
+    // since this rule has no weight.
+    var ring = document.createElement('style');
+    ring.textContent = ':where(:focus-visible){outline:none}';
+    var addRing = function () { (document.head || document.documentElement).appendChild(ring); };
+    if (document.documentElement) addRing(); else document.addEventListener('DOMContentLoaded', addRing);
   }
 
   // 4. Blocked hosts fail the way they do with any ad blocker: the browser decides (adblock lists,
