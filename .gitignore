@@ -1,0 +1,6 @@
+.DS_Store
+# Build output (the APK people install lives in dist/)
+browser/build/
+# Signing key: back it up, never publish it
+*.keystore
+*.idsig
