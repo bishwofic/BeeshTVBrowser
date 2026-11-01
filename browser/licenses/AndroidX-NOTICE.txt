@@ -1,0 +1,8 @@
+browser/libs/ contains AndroidX libraries from the Android Open Source Project:
+
+  androidx.webkit:webkit 1.12.1
+  androidx.annotation:annotation 1.8.1 (compile only)
+  androidx.annotation:annotation-experimental 1.4.1 (compile only)
+
+Copyright The Android Open Source Project. Licensed under the Apache License, Version 2.0; the full
+text is in Material-Icons-Apache-2.0.txt in this folder.

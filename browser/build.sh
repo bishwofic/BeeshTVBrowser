@@ -16,9 +16,15 @@ rm -rf "$B" && mkdir -p "$B/gen" "$B/classes" "$B/dex" ../dist
 "$BT/aapt2" compile --dir res -o "$B/res.zip"
 "$BT/aapt2" link -o "$B/base.apk" -I "$JAR" --manifest AndroidManifest.xml --java "$B/gen" \
   -A assets -0 jpg -0 ttf --min-sdk-version 28 --target-sdk-version 30 "$B/res.zip"
-javac -nowarn -Xlint:-options --release 11 -classpath "$JAR" -d "$B/classes" \
+# androidx.webkit (WebView features newer than the platform API) ships in the APK; the annotation
+# jars are only needed to compile against it.
+LIBS="libs/androidx-webkit-1.12.1.jar"
+COMPILE_ONLY="libs/androidx-annotation-1.8.1.jar:libs/androidx-annotation-experimental-1.4.1.jar"
+javac -nowarn -Xlint:-options --release 11 -classpath "$JAR:$LIBS:$COMPILE_ONLY" -d "$B/classes" \
   $(find src "$B/gen" -name '*.java')
-"$BT/d8" --min-api 28 --lib "$JAR" --output "$B/dex" $(find "$B/classes" -name '*.class')
+"$BT/d8" --min-api 28 --lib "$JAR" --classpath libs/androidx-annotation-1.8.1.jar \
+  --classpath libs/androidx-annotation-experimental-1.4.1.jar --output "$B/dex" \
+  $(find "$B/classes" -name '*.class') $LIBS
 cp "$B/base.apk" "$B/unsigned.apk"
 (cd "$B/dex" && zip -q -u ../unsigned.apk classes.dex)
 "$BT/zipalign" -f 4 "$B/unsigned.apk" "$B/aligned.apk"

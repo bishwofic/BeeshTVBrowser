@@ -1,29 +1,43 @@
 # BeeshTV Browser
 
-A web browser made for the TV remote. The page fills the screen and a pointer moves over it with the
-arrow keys: OK clicks, pushing past an edge scrolls. A bar drops down for the address, voice search,
-ad blocking, desktop sites and zoom.
+A web browser made for the TV remote. A pointer moves over everything with the arrow keys, like a
+mouse: OK clicks, pushing past an edge scrolls. The bar above the page has back, forward, reload, home,
+the address, voice search, ad blocking, desktop site and zoom.
 
 Built on the TV's own Android System WebView (Chromium), so pages render like they do in Chrome. It
 pairs with [BeeshTV Launcher](https://github.com/bishwofic/BeeshTVLauncher) but works on its own.
 
 ## Features
 
+- **A home page** on the same photo as your TV's Home (from BeeshTV Launcher, blurred the way the
+  launcher blurs it), with the weather and time, a big search box and your shortcuts (hold OK on one
+  to remove it). Settings can turn the photo "off", for a heavily frosted version of it instead.
 - **A pointer for the D-pad.** It starts slow for precise aim and speeds up while you hold a
   direction. OK clicks (hold for a long press), hovering opens menus, and pushing the pointer against
   any edge scrolls whatever is under it, inner panes included. Page Up / Down and Channel Up / Down
   scroll a screen at a time.
 - **One box for everything.** Type a web address to open it, or anything else to search Google,
   DuckDuckGo, Bing or Brave. The microphone button searches by voice.
+- **DNS protection**, AdGuard by default: every site is checked with the DNS service you pick (AdGuard,
+  AdGuard Family, Cloudflare, Cloudflare Family, OpenDNS, OpenDNS FamilyShield, Quad9, or off) over
+  encrypted DNS, and what it blocks doesn't load. Android doesn't let an app change the DNS server
+  the page engine uses, so the TV's own DNS still does the lookups (`install.sh` in BeeshTV Launcher
+  sets that to AdGuard too).
 - **Ad and tracker blocking**, on by default. It starts with a built-in list and switches to
   [Steven Black's hosts list](https://github.com/StevenBlack/hosts) (about 80,000 ad and malware hosts),
-  refreshed weekly. The bar shows how many requests were blocked on the page.
+  refreshed weekly. The bar shows how many requests were blocked on the page, and the shield turns
+  blocking off for one site that won't work with it.
+- **Video players that just play.** Players inside frames often stop with "sandboxed iframe" or
+  "disable your popup blocker" messages. Frames are never sandboxed, pop-ups get a harmless stand-in
+  instead of a window, and the browser doesn't tell sites it's an app (no X-Requested-With header).
+- **Pop-ups blocked**: a link you click opens in the tab, anything a page tries to open on its own
+  doesn't.
 - **Desktop site** per site, or for every site, when the phone version of a site is too cut down.
 - **Zoom** per site, from 50% to 200%, remembered for next time.
 - **Full-screen video** with Back to leave it.
 - **Opens web links from other apps**: choose BeeshTV Browser and Always when the TV asks.
 - **Updates itself** from this repo's GitHub releases, like BeeshTV Launcher.
-- Small: about 300 KB, since the page engine is the TV's own.
+- Small: about 500 KB, since the page engine is the TV's own.
 
 ## Using it
 
@@ -31,15 +45,16 @@ pairs with [BeeshTV Launcher](https://github.com/bishwofic/BeeshTVLauncher) but 
 |---|---|
 | Arrows | Move the pointer (hold to go faster); push past an edge to scroll |
 | OK | Click; hold for a long press |
-| Menu, or Up at the top of a page | Show or hide the bar |
-| Back | Previous page; on the first page, the bar |
+| Menu | Type in the address |
+| Back | Previous page; from the first page, the home page; there, twice to close |
 | Page Up / Down, Channel Up / Down | Scroll a screen at a time |
 
-In the bar, from the left: back, forward, reload, the address, voice search, ad blocking (with the
-number blocked), desktop site, zoom out, zoom in, and settings. Down or Back hides it again.
+In the bar, from the left: back, forward, reload, home, the address, voice search, ad blocking on
+this site (with the number blocked), desktop site, zoom out, zoom in, and settings. The site-only
+buttons are hidden on the home page. Menu puts the D-pad in the bar for typing; Down or Back leaves it.
 
-**Settings** has the search engine, ad blocking and its list, desktop sites by default, clearing
-cookies and history, and updates.
+**Settings** has the search engine, the home page background, DNS protection, pop-up blocking, ad
+blocking and its list, desktop sites by default, clearing cookies and history, and updates.
 
 ## Install
 
@@ -90,7 +105,9 @@ The APK is signed with `browser/debug.keystore`, created on the first build (it 
 
 ## Credits
 
-- Page engine: the TV's Android System WebView (Chromium).
+- Page engine: the TV's Android System WebView (Chromium), with
+  [AndroidX WebKit](https://developer.android.com/jetpack/androidx/releases/webkit) (Apache 2.0) in `browser/libs/`.
+- Site icons on the home page: Google's favicon service.
 - Ad and tracker list: [StevenBlack/hosts](https://github.com/StevenBlack/hosts) (MIT).
 - Typeface: [Schibsted Grotesk](https://github.com/schibsted/schibsted-grotesk) by Schibsted (SIL Open Font License).
 - Icons are in the style of Google's Material Symbols (Apache 2.0).

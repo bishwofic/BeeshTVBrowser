@@ -45,6 +45,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.webkit.ScriptHandler;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
 import java.util.ArrayList;
@@ -62,7 +67,6 @@ import java.util.regex.Pattern;
  */
 public class BrowserActivity extends Activity {
 
-    static final String START = "file:///android_asset/start.html";
     static final String[][] ENGINES = {
             {"Google", "https://www.google.com/search?q="},
             {"DuckDuckGo", "https://duckduckgo.com/?q="},
@@ -78,6 +82,12 @@ public class BrowserActivity extends Activity {
 
     private SharedPreferences sp;
     private AdBlock adblock;
+    private Dns dns;
+    private Home home;
+    private boolean onHome;
+    /** The site in the tab now, read on the network threads for its ad-blocking exception. */
+    private volatile String pageHost;
+    private ScriptHandler frameFix;
     private Updater updater;
     private FrameLayout root;
     private WebView web;
@@ -86,7 +96,7 @@ public class BrowserActivity extends Activity {
     private ScrollView panelScroll;
     private EditText address;
     private TextView blockedCount, updateChip;
-    private ImageView desktopBtn, settingsBtn, shieldBtn;
+    private ImageView desktopBtn, settingsBtn, shieldBtn, zoomOutBtn, zoomInBtn;
     private View progress;
     private View fullscreen;
     private WebChromeClient.CustomViewCallback fullscreenDone;
@@ -104,6 +114,8 @@ public class BrowserActivity extends Activity {
         super.onCreate(b);
         sp = getSharedPreferences("browser", MODE_PRIVATE);
         adblock = new AdBlock(this, sp);
+        dns = new Dns(sp);
+        dns.warmUp();
         updater = new Updater(this, sp);
         updater.onChange = this::onUpdateChanged;
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -113,6 +125,10 @@ public class BrowserActivity extends Activity {
         int barTop = dp(14), barH = dp(60), pageTop = barTop + barH + dp(12);
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF0B0B0D);
+        // The home page fills the whole screen, under the bar; pages show below the bar.
+        home = new Home(this, sp, pageTop, text -> load(searchOrUrl(text)));
+        home.setVisibility(View.GONE);
+        root.addView(home, new FrameLayout.LayoutParams(-1, -1));
         web = buildWebView();
         root.addView(web, lp(-1, -1, Gravity.TOP, 0, pageTop, 0, 0));
         progress = new View(this);
@@ -132,13 +148,8 @@ public class BrowserActivity extends Activity {
         setContentView(root);
 
         String url = urlFrom(getIntent());
-        if (url == null) url = sp.getString("last_url", null);
-        if (url == null || url.equals(START)) {
-            web.loadUrl(START);
-            enterBar();
-        } else {
-            load(url);
-        }
+        if (url == null) showHome();
+        else load(url);
     }
 
     @Override
@@ -152,6 +163,8 @@ public class BrowserActivity extends Activity {
     protected void onResume() {
         super.onResume();
         web.onResume();
+        // Home's photo may have changed while we were away.
+        if (onHome) home.refresh();
         updater.check(false);
         adblock.refreshIfDue(false, null);
         onUpdateChanged();
@@ -159,8 +172,6 @@ public class BrowserActivity extends Activity {
 
     @Override
     protected void onPause() {
-        String url = web.getUrl();
-        if (url != null) sp.edit().putString("last_url", url).apply();
         web.onPause();
         CookieManager.getInstance().flush();
         super.onPause();
@@ -198,7 +209,9 @@ public class BrowserActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
-        s.setSupportMultipleWindows(false);
+        // Pop-ups come to onCreateWindow: blocked, or opened in this tab when they come from a click.
+        s.setSupportMultipleWindows(true);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setAllowFileAccess(false);
         CookieManager.getInstance().setAcceptCookie(true);
@@ -213,6 +226,12 @@ public class BrowserActivity extends Activity {
         desktopUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome
                 + " Safari/537.36";
         s.setUserAgentString(mobileUA);
+        // WebView tells every site which app it's in (X-Requested-With); players use it to refuse
+        // "apps". Send it to nobody.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, java.util.Collections.emptySet());
+        }
+        installFrameFix(w);
 
         w.setWebViewClient(new WebViewClient() {
             @Override
@@ -227,7 +246,11 @@ public class BrowserActivity extends Activity {
 
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
-                if (r.isForMainFrame() || !adblock.blocks(r.getUrl().getHost())) return null;
+                String host = r.getUrl().getHost();
+                // A whole site the DNS service blocks (malware, phishing, and for AdGuard ads too).
+                if (r.isForMainFrame()) return dns.blocks(host, true) ? blockedPage(host) : null;
+                // Ads and trackers inside the page, unless they're allowed on this site.
+                if (adsAllowed(pageHost) || !adblock.blocks(host) && !dns.blocks(host, false)) return null;
                 int n = blocked.incrementAndGet();
                 runOnUiThread(() -> showBlocked(n));
                 return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
@@ -235,9 +258,11 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
+                pageHost = hostOf(url);
                 blocked.set(0);
                 showBlocked(0);
-                if (!address.hasFocus()) address.setText(shown(url));
+                paintShield();
+                if (!address.hasFocus() && !onHome) address.setText(shown(url));
             }
 
             @Override
@@ -267,6 +292,26 @@ public class BrowserActivity extends Activity {
 
             @Override public void onPermissionRequest(PermissionRequest r) { r.deny(); }
 
+            /**
+             * window.open and target=_blank. A click on a link opens it here, in this tab; anything a
+             * page opens on its own is a pop-up, dropped while pop-ups are blocked.
+             */
+            @Override
+            public boolean onCreateWindow(WebView v, boolean dialog, boolean userGesture, android.os.Message result) {
+                if (!userGesture && popupsBlocked()) return false;
+                WebView catcher = new WebView(BrowserActivity.this);
+                catcher.setWebViewClient(new WebViewClient() {
+                    @Override public boolean shouldOverrideUrlLoading(WebView c, WebResourceRequest r) {
+                        load(r.getUrl().toString());
+                        c.destroy();
+                        return true;
+                    }
+                });
+                ((WebView.WebViewTransport) result.obj).setWebView(catcher);
+                result.sendToTarget();
+                return true;
+            }
+
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback cb) {
                 cb.invoke(origin, false, false);
@@ -281,6 +326,40 @@ public class BrowserActivity extends Activity {
                 toast("Downloads aren't supported. Open it on another device."));
         return w;
     }
+
+    /**
+     * Before any of a page's own scripts, in every frame: keep frames unsandboxed and, with pop-ups
+     * blocked, give window.open a stand-in (assets/frames.js). Set again when the pop-up setting changes.
+     */
+    private void installFrameFix(WebView w) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return;
+        if (frameFix != null) frameFix.remove();
+        String script;
+        try (java.io.InputStream in = getAssets().open("frames.js")) {
+            byte[] b = new byte[in.available()];
+            int n = in.read(b);
+            script = new String(b, 0, Math.max(0, n), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            return;
+        }
+        if (popupsBlocked()) script = "window.__beeshtvBlockPopups = true;\n" + script;
+        frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
+    }
+
+    private boolean popupsBlocked() { return sp.getBoolean("block_popups", true); }
+
+    /** Shown in place of a site the DNS service blocks. */
+    private WebResourceResponse blockedPage(String host) {
+        String html = "<!doctype html><meta name=viewport content='width=device-width'>"
+                + "<body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;"
+                + "justify-content:center;background:#0b0b0d;color:#f5f5f5;font:20px system-ui,sans-serif'>"
+                + "<div style='font-size:44px;font-weight:700;margin-bottom:14px'>Blocked</div>"
+                + "<div style='color:#c8c8cc'>" + TextUtils.htmlEncode(host) + " is blocked by " + dns.name() + ".</div>"
+                + "<div style='color:#8c8c92;margin-top:10px;font-size:16px'>Settings → DNS protection chooses the service, or turns it off.</div>";
+        return new WebResourceResponse("text/html", "utf-8", new ByteArrayInputStream(html.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    private boolean adsAllowed(String host) { return host != null && sp.getBoolean("ads_ok:" + host, false); }
 
     /** intent:, market:, mailto: and the like go to whatever app handles them, if any. */
     private boolean openElsewhere(String url) {
@@ -297,6 +376,7 @@ public class BrowserActivity extends Activity {
     }
 
     private void load(String url) {
+        if (onHome) hideHome();
         applyAgentFor(url);
         web.loadUrl(url);
         address.setText(shown(url));
@@ -320,11 +400,11 @@ public class BrowserActivity extends Activity {
     private String[] engine() { return ENGINES[Math.floorMod(sp.getInt("engine", 0), ENGINES.length)]; }
 
     private static String shown(String url) {
-        return url == null || url.equals(START) ? "" : url;
+        return url == null || url.equals("about:blank") ? "" : url;
     }
 
     private static String hostOf(String url) {
-        if (url == null || url.equals(START)) return null;
+        if (url == null || url.startsWith("about:")) return null;
         String h = Uri.parse(url).getHost();
         return h == null ? null : h.startsWith("www.") ? h.substring(4) : h;
     }
@@ -508,8 +588,9 @@ public class BrowserActivity extends Activity {
                 return true;
             case KeyEvent.KEYCODE_BACK:
                 if (down) return true;
-                if (web.canGoBack()) { web.goBack(); return true; }
-                // On the first page, Back twice closes the browser.
+                if (!onHome && web.canGoBack()) { web.goBack(); return true; }
+                if (!onHome) { showHome(); return true; }
+                // On the home page, Back twice closes the browser.
                 long now = SystemClock.uptimeMillis();
                 if (now - backAt < 2000) finish();
                 else { backAt = now; toast("Press Back again to close"); }
@@ -541,7 +622,8 @@ public class BrowserActivity extends Activity {
 
         bar.addView(button(R.drawable.ic_back, "Back", v -> { if (web.canGoBack()) web.goBack(); }));
         bar.addView(button(R.drawable.ic_forward, "Forward", v -> { if (web.canGoForward()) web.goForward(); }));
-        bar.addView(button(R.drawable.ic_reload, "Reload", v -> web.reload()));
+        bar.addView(button(R.drawable.ic_reload, "Reload", v -> { if (!onHome) web.reload(); }));
+        bar.addView(button(R.drawable.ic_home, "Home", v -> showHome()));
 
         address = new EditText(this);
         address.setSingleLine(true);
@@ -575,9 +657,14 @@ public class BrowserActivity extends Activity {
         bar.addView(address, llp(0, dp(44), 1f, dp(8), dp(8)));
 
         bar.addView(button(R.drawable.ic_mic, "Voice search", v -> voice()));
-        shieldBtn = button(R.drawable.ic_shield, "Ad blocking", v -> {
-            adblock.setEnabled(!adblock.enabled());
-            toast(adblock.enabled() ? "Blocking ads and trackers" : "Ad blocking off");
+        // Ads on or off for this site (a site that won't play with ads blocked can be let through).
+        shieldBtn = button(R.drawable.ic_shield, "Ad blocking on this site", v -> {
+            String h = hostOf(web.getUrl());
+            if (h == null) return;
+            if (!adblock.enabled()) { toast("Ad blocking is off in Settings"); return; }
+            boolean allow = !adsAllowed(h);
+            sp.edit().putBoolean("ads_ok:" + h, allow).apply();
+            toast(allow ? "Ads allowed on " + h : "Blocking ads on " + h);
             paintShield();
             web.reload();
         });
@@ -586,8 +673,10 @@ public class BrowserActivity extends Activity {
         bar.addView(blockedCount, llp(-2, -2, -dp(2), dp(6)));
         desktopBtn = button(R.drawable.ic_desktop, "Desktop site", v -> toggleDesktop());
         bar.addView(desktopBtn);
-        bar.addView(button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1)));
-        bar.addView(button(R.drawable.ic_zoom_in, "Zoom in", v -> stepZoom(1)));
+        zoomOutBtn = button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1));
+        zoomInBtn = button(R.drawable.ic_zoom_in, "Zoom in", v -> stepZoom(1));
+        bar.addView(zoomOutBtn);
+        bar.addView(zoomInBtn);
 
         updateChip = text(13, 700, 0xFF111111);
         updateChip.setPadding(dp(14), dp(7), dp(14), dp(7));
@@ -619,8 +708,8 @@ public class BrowserActivity extends Activity {
         inBar = false;
         InputMethodManager imm = getSystemService(InputMethodManager.class);
         if (imm != null) imm.hideSoftInputFromWindow(address.getWindowToken(), 0);
-        if (address.hasFocus()) address.setText(shown(web.getUrl()));
-        web.requestFocus();
+        if (address.hasFocus()) address.setText(onHome ? "" : shown(web.getUrl()));
+        if (onHome) home.requestFocus(); else web.requestFocus();
         cursor.wake();
     }
 
@@ -629,7 +718,39 @@ public class BrowserActivity extends Activity {
     }
 
     private void paintShield() {
-        shieldBtn.setImageTintList(ColorStateList.valueOf(adblock.enabled() ? AMBER : TEXT_2));
+        boolean on = adblock.enabled() && !adsAllowed(hostOf(web.getUrl()));
+        shieldBtn.setImageTintList(ColorStateList.valueOf(on ? AMBER : TEXT_2));
+    }
+
+    // ---- the home page
+
+    private void showHome() {
+        onHome = true;
+        // Nothing keeps playing behind it.
+        web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
+        web.setVisibility(View.INVISIBLE);
+        progress.setVisibility(View.INVISIBLE);
+        home.setVisibility(View.VISIBLE);
+        home.refresh();
+        address.setText("");
+        setHomeMode(true);
+        exitBar();
+    }
+
+    private void hideHome() {
+        onHome = false;
+        home.setVisibility(View.GONE);
+        web.setVisibility(View.VISIBLE);
+        progress.setVisibility(View.VISIBLE);
+        setHomeMode(false);
+    }
+
+    /** On the home page the bar is see-through and only has what makes sense without a site. */
+    private void setHomeMode(boolean on) {
+        for (View v : new View[]{shieldBtn, blockedCount, desktopBtn, zoomOutBtn, zoomInBtn}) {
+            v.setVisibility(on ? View.GONE : View.VISIBLE);
+        }
+        ((GradientDrawable) bar.getBackground()).setColor(on ? 0x8C101014 : GLASS);
     }
 
     private void voice() {
@@ -706,6 +827,21 @@ public class BrowserActivity extends Activity {
             address.setHint("Search " + engine()[0] + " or type a web address");
             refillPanel();
         });
+        row("Home page background", Home.BACKGROUNDS[home.background()], () -> {
+            home.setBackground(home.background() + 1);
+            refillPanel();
+        });
+        row("DNS protection", dns.name(), () -> {
+            dns.setService(dns.service() + 1);
+            refillPanel();
+            if (!onHome) web.reload();
+        });
+        row("Block pop-ups", popupsBlocked() ? "On" : "Off", () -> {
+            sp.edit().putBoolean("block_popups", !popupsBlocked()).apply();
+            installFrameFix(web);
+            refillPanel();
+            if (!onHome) web.reload();
+        });
         row("Block ads and trackers", adblock.enabled() ? "On" : "Off", () -> {
             adblock.setEnabled(!adblock.enabled());
             paintShield();
@@ -728,7 +864,6 @@ public class BrowserActivity extends Activity {
             WebStorage.getInstance().deleteAllData();
             web.clearCache(true);
             web.clearHistory();
-            sp.edit().remove("last_url").apply();
             toast("Cookies, site data and history cleared");
         });
         row("Open links from other apps", "How", () -> toast(

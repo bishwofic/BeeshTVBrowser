@@ -13,6 +13,8 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <queries>
+        <!-- BeeshTV Launcher shares its photo and weather with the home page (ShareProvider). -->
+        <package android:name="com.beeshtv.home" />
         <!-- Voice search, through the TV's own speech recogniser. -->
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
