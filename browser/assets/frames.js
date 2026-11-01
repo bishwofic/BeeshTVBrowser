@@ -31,7 +31,8 @@
       if (c.type === 'attributes') { if (c.target instanceof HTMLIFrameElement) unsandbox(c.target); return; }
       c.addedNodes.forEach(function (n) {
         if (n instanceof HTMLIFrameElement) unsandbox(n);
-        else if (n.querySelectorAll) n.querySelectorAll('iframe[sandbox]').forEach(unsandbox);
+        // A live list, cheap when there are no frames inside (most added nodes).
+        else if (n.getElementsByTagName) { var fs = n.getElementsByTagName('iframe'); for (var i = 0; i < fs.length; i++) unsandbox(fs[i]); }
       });
     });
   }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['sandbox'] });

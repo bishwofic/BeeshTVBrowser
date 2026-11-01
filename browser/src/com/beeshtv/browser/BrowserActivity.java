@@ -7,17 +7,15 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.text.InputType;
 import android.text.TextUtils;
-import android.text.format.DateUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -41,7 +39,6 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -50,20 +47,22 @@ import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
+import org.json.JSONArray;
+
 import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Locale;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A browser for the remote. The bar sits above the page: back, forward, reload, the address (a web
- * address opens, anything else is searched), voice, ad blocking, desktop site, zoom and settings.
- * A pointer moves over everything with the D-pad, like a mouse: OK clicks whatever is under it, the
- * bar's buttons included, and pushing it against an edge scrolls the page. Menu jumps to the
- * address to type.
+ * A browser for the remote. Pages sit under a bar (back, forward, reload, home, the address, voice,
+ * ad blocking, desktop site, zoom, tabs, settings); the start screen (Start) has Home, Tabs, History,
+ * Settings, Help and About. A pointer moves over everything with the D-pad, like a mouse: OK clicks
+ * whatever is under it and pushing it against an edge scrolls. Menu jumps to the address to type.
  */
 public class BrowserActivity extends Activity {
 
@@ -75,36 +74,51 @@ public class BrowserActivity extends Activity {
     };
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
     static final int REQ_VOICE = 7;
+    /** Each open page takes memory on a TV that has little; more than this and pages start reloading. */
+    static final int MAX_TABS = 6;
+    /** Hover is passed to the page at most this often while the pointer moves (players react to every move). */
+    static final long HOVER_EVERY_MS = 60;
 
-    // White on glass, as on BeeshTV's Home.
-    static final int TEXT = 0xFFFFFFFF, TEXT_2 = 0xCCFFFFFF, FOCUS = 0x3DFFFFFF, CURRENT = 0x1FFFFFFF;
-    static final int GLASS = 0xEB151518, AMBER = 0xFFFFB01F;
+    /** One open page. Its WebView is made when it's first shown, so restored tabs cost nothing until then. */
+    final class Tab {
+        WebView web;
+        String url, title;
+        volatile String host;
+        final AtomicInteger blocked = new AtomicInteger();
+        ScriptHandler frameFix;
+
+        String url() { return web != null && web.getUrl() != null ? web.getUrl() : url; }
+        String title() { return web != null && web.getTitle() != null ? web.getTitle() : title; }
+        boolean empty() { String u = url(); return u == null || u.startsWith("about:"); }
+    }
 
     private SharedPreferences sp;
     private AdBlock adblock;
     private Dns dns;
-    private Home home;
-    private boolean onHome;
-    /** The site in the tab now, read on the network threads for its ad-blocking exception. */
-    private volatile String pageHost;
-    private ScriptHandler frameFix;
     private Updater updater;
-    private FrameLayout root;
-    private WebView web;
+    private History history;
+    private final Handler main = new Handler(Looper.getMainLooper());
+
+    private FrameLayout root, pages;
+    private Start start;
     private CursorView cursor;
-    private LinearLayout bar, panel;
-    private ScrollView panelScroll;
+    private LinearLayout bar;
     private EditText address;
-    private TextView blockedCount, updateChip;
-    private ImageView desktopBtn, settingsBtn, shieldBtn, zoomOutBtn, zoomInBtn;
+    private TextView blockedCount, tabCount, updateBtn;
+    private ImageView desktopBtn, shieldBtn;
     private View progress;
     private View fullscreen;
     private WebChromeClient.CustomViewCallback fullscreenDone;
-    private final AtomicInteger blocked = new AtomicInteger();
+
+    private final List<Tab> tabs = new ArrayList<>();
+    private Tab tab;
+    /** The current tab's page. */
+    private WebView web;
+
     private String mobileUA, desktopUA;
     /** The D-pad is moving between the bar's buttons (after Menu) rather than the pointer. */
     private boolean inBar;
-    private long touchDownAt, backAt;
+    private long touchDownAt, backAt, hoverAt;
     private View hovered;
 
     // ---------------------------------------------------------------- lifecycle
@@ -118,68 +132,82 @@ public class BrowserActivity extends Activity {
         dns.warmUp();
         updater = new Updater(this, sp);
         updater.onChange = this::onUpdateChanged;
+        history = new History(this);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
 
-        // The bar is always there, above the page; the pointer moves over both.
-        int barTop = dp(14), barH = dp(60), pageTop = barTop + barH + dp(12);
+        String base = WebSettings.getDefaultUserAgent(this);
+        // The stock WebView agent says "wv" and "Version/4.0", which some sites treat as a lesser
+        // browser; without them it reads as Chrome on Android. Desktop mode reads as Chrome on Linux.
+        mobileUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "");
+        Matcher m = Pattern.compile("Chrome/([\\d.]+)").matcher(base);
+        String chrome = m.find() ? m.group(1) : "124.0.0.0";
+        desktopUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome
+                + " Safari/537.36";
+
+        // Pages under the bar; the start screen over both; the pointer over everything.
+        int barTop = dp(16), barH = dp(56), pageTop = barTop + barH + dp(12);
         root = new FrameLayout(this);
-        root.setBackgroundColor(0xFF0B0B0D);
-        // The home page fills the whole screen, under the bar; pages show below the bar.
-        home = new Home(this, sp, pageTop, text -> load(searchOrUrl(text)));
-        home.setVisibility(View.GONE);
-        root.addView(home, new FrameLayout.LayoutParams(-1, -1));
-        web = buildWebView();
-        root.addView(web, lp(-1, -1, Gravity.TOP, 0, pageTop, 0, 0));
+        root.setBackgroundColor(Ui.BG);
+        // Holds focus while the pointer is in charge, so no field takes the D-pad.
+        root.setFocusable(true);
+        root.setFocusableInTouchMode(true);
+        pages = new FrameLayout(this);
+        root.addView(pages, lp(-1, -1, Gravity.TOP, 0, pageTop, 0, 0));
         progress = new View(this);
-        progress.setBackgroundColor(AMBER);
+        progress.setBackgroundColor(Ui.RED);
         progress.setPivotX(0);
         progress.setScaleX(0);
-        root.addView(progress, lp(-1, dp(3), Gravity.TOP, 0, pageTop, 0, 0));
-        root.addView(buildBar(), lp(-1, barH, Gravity.TOP, dp(28), barTop, dp(28), 0));
-        root.addView(buildPanel(), lp(dp(440), -1, Gravity.END, 0, pageTop, dp(28), dp(18)));
+        root.addView(progress, lp(-1, dp(2), Gravity.TOP, 0, pageTop, 0, 0));
+        root.addView(buildBar(), lp(-1, barH, Gravity.TOP, dp(24), barTop, dp(24), 0));
+        start = new Start(this, sp);
+        root.addView(start, new FrameLayout.LayoutParams(-1, -1));
         cursor = new CursorView(this);
         cursor.setListener(new CursorView.Listener() {
             @Override public void onMove(float x, float y) { hover(x, y); }
-            @Override public void onEdge(float dx, float dy) { mouse(MotionEvent.ACTION_SCROLL, dx, dy); }
+            @Override public void onEdge(float dx, float dy) {
+                if (start.getVisibility() == View.VISIBLE) start.scrollBy(dy);
+                else mouse(MotionEvent.ACTION_SCROLL, dx, dy);
+            }
         });
         int c = CursorView.sizePx(this);
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         setContentView(root);
 
+        restoreTabs();
         String url = urlFrom(getIntent());
-        if (url == null) showHome();
-        else load(url);
+        if (url == null) showStart(Start.Page.HOME);
+        else openFromOutside(url);
     }
 
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         String url = urlFrom(i);
-        if (url != null) load(url);
+        if (url != null) openFromOutside(url);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        web.onResume();
-        // Home's photo may have changed while we were away.
-        if (onHome) home.refresh();
+        if (web != null) web.onResume();
         updater.check(false);
         adblock.refreshIfDue(false, null);
+        if (start.getVisibility() == View.VISIBLE) start.refresh();
         onUpdateChanged();
     }
 
     @Override
     protected void onPause() {
-        web.onPause();
+        saveTabs();
+        if (web != null) web.onPause();
         CookieManager.getInstance().flush();
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
-        web.destroy();
+        for (Tab t : tabs) if (t.web != null) t.web.destroy();
         super.onDestroy();
     }
 
@@ -194,11 +222,104 @@ public class BrowserActivity extends Activity {
         return null;
     }
 
-    // ---------------------------------------------------------------- the page
+    /** A link from another app gets its own tab, unless the current one is empty. */
+    private void openFromOutside(String url) {
+        if (!tab.empty() && tabs.size() < MAX_TABS) select(addTab());
+        load(url);
+    }
 
-    private WebView buildWebView() {
+    // ---------------------------------------------------------------- tabs
+
+    List<Tab> tabs() { return tabs; }
+    Tab currentTab() { return tab; }
+
+    private Tab addTab() {
+        Tab t = new Tab();
+        tabs.add(t);
+        return t;
+    }
+
+    /** Shows a tab; the one it replaces stops playing and is paused, so it can't slow this one down. */
+    private void select(Tab t) {
+        if (tab != null && tab != t && tab.web != null) {
+            WebView old = tab.web;
+            old.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
+            old.onPause();
+            old.setVisibility(View.INVISIBLE);
+            old.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true);
+        }
+        tab = t;
+        if (t.web == null) {
+            t.web = buildWebView(t);
+            pages.addView(t.web, new FrameLayout.LayoutParams(-1, -1));
+            if (t.url != null) {
+                applyAgentFor(t.web, t.url);
+                t.web.loadUrl(t.url);
+            }
+        }
+        web = t.web;
+        web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        web.onResume();
+        web.setVisibility(View.VISIBLE);
+        refreshBar();
+    }
+
+    void switchTab(Tab t) {
+        select(t);
+        if (t.empty()) showStart(Start.Page.HOME); else hideStart();
+    }
+
+    void newTab() {
+        if (tabs.size() >= MAX_TABS) {
+            toast("Close a tab first. " + MAX_TABS + " is the most this TV can keep open");
+            return;
+        }
+        select(addTab());
+        showStart(Start.Page.HOME);
+        start.focusSearch();
+    }
+
+    void closeTab(Tab t) {
+        int i = tabs.indexOf(t);
+        if (i < 0) return;
+        tabs.remove(i);
+        if (t.web != null) {
+            pages.removeView(t.web);
+            t.web.destroy();
+        }
+        if (t == tab) {
+            tab = null;
+            if (tabs.isEmpty()) addTab();
+            select(tabs.get(Math.min(i, tabs.size() - 1)));
+        }
+        refreshBar();
+    }
+
+    private void saveTabs() {
+        JSONArray a = new JSONArray();
+        for (Tab t : tabs) a.put(t.empty() ? "" : t.url());
+        sp.edit().putString("tabs", a.toString()).putInt("tab_now", tabs.indexOf(tab)).apply();
+    }
+
+    private void restoreTabs() {
+        try {
+            JSONArray a = new JSONArray(sp.getString("tabs", "[]"));
+            for (int i = 0; i < a.length() && i < MAX_TABS; i++) {
+                Tab t = addTab();
+                String u = a.getString(i);
+                t.url = u.isEmpty() ? null : u;
+                t.host = hostOf(t.url);
+            }
+        } catch (Exception ignored) { }
+        if (tabs.isEmpty()) addTab();
+        select(tabs.get(Math.max(0, Math.min(sp.getInt("tab_now", 0), tabs.size() - 1))));
+    }
+
+    // ---------------------------------------------------------------- a page
+
+    private WebView buildWebView(Tab t) {
         WebView w = new WebView(this);
-        w.setBackgroundColor(0xFF0B0B0D);
+        w.setBackgroundColor(Ui.BG);
         w.setFocusable(true);
         w.setVerticalScrollBarEnabled(false);
         w.setHorizontalScrollBarEnabled(false);
@@ -217,24 +338,15 @@ public class BrowserActivity extends Activity {
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setAllowFileAccess(false);
+        s.setUserAgentString(mobileUA);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
-
-        // The stock WebView agent says "wv" and "Version/4.0", which some sites treat as a lesser
-        // browser; without them it reads as Chrome on Android. Desktop mode reads as Chrome on Linux.
-        String base = WebSettings.getDefaultUserAgent(this);
-        mobileUA = base.replace("; wv", "").replaceAll("Version/[\\d.]+ ", "");
-        Matcher m = Pattern.compile("Chrome/([\\d.]+)").matcher(base);
-        String chrome = m.find() ? m.group(1) : "124.0.0.0";
-        desktopUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome
-                + " Safari/537.36";
-        s.setUserAgentString(mobileUA);
         // WebView tells every site which app it's in (X-Requested-With); players use it to refuse
         // "apps". Send it to nobody.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, java.util.Collections.emptySet());
         }
-        installFrameFix(w);
+        installFrameFix(t, w);
 
         w.setWebViewClient(new WebViewClient() {
             @Override
@@ -243,7 +355,7 @@ public class BrowserActivity extends Activity {
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
                 if (!scheme.equals("http") && !scheme.equals("https")) return openElsewhere(u.toString());
                 // Switching between the phone and desktop agent means loading the page afresh.
-                if (r.isForMainFrame() && applyAgentFor(u.toString())) { v.loadUrl(u.toString()); return true; }
+                if (r.isForMainFrame() && applyAgentFor(v, u.toString())) { v.loadUrl(u.toString()); return true; }
                 return false;
             }
 
@@ -253,44 +365,46 @@ public class BrowserActivity extends Activity {
                 // A whole site the DNS service blocks (malware, phishing, and for AdGuard ads too).
                 if (r.isForMainFrame()) return dns.blocks(host, true) ? blockedPage(host) : null;
                 // Ads and trackers inside the page, unless they're allowed on this site.
-                if (adsAllowed(pageHost) || !adblock.blocks(host) && !dns.blocks(host, false)) return null;
-                int n = blocked.incrementAndGet();
-                runOnUiThread(() -> showBlocked(n));
+                if (adsAllowed(t.host) || !adblock.blocks(host) && !dns.blocks(host, false)) return null;
+                int n = t.blocked.incrementAndGet();
+                if (t == tab) main.post(() -> { if (t == tab) showBlocked(n); });
                 return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
             }
 
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
-                pageHost = hostOf(url);
-                blocked.set(0);
-                showBlocked(0);
-                paintShield();
-                if (!address.hasFocus() && !onHome) address.setText(shown(url));
+                t.host = hostOf(url);
+                t.blocked.set(0);
+                if (t == tab) refreshBar();
             }
 
             @Override
             public void onPageFinished(WebView v, String url) {
-                if (!address.hasFocus()) address.setText(shown(url));
-                applyZoom();
-                paintDesktop();
+                history.add(url, v.getTitle());
+                applyZoom(v);
+                if (t == tab) refreshBar();
             }
 
             @Override
             public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail d) {
                 // The page's renderer crashed or was killed for memory: start over rather than close.
+                saveTabs();
                 recreate();
                 return true;
             }
         });
         w.setWebChromeClient(new WebChromeClient() {
             @Override public void onProgressChanged(WebView v, int p) {
+                if (t != tab) return;
                 progress.animate().cancel();
                 progress.setAlpha(1f);
                 progress.animate().scaleX(p / 100f).setDuration(200).start();
                 if (p >= 100) progress.animate().alpha(0f).setStartDelay(300).setDuration(300).start();
             }
 
-            @Override public void onShowCustomView(View v, CustomViewCallback done) { enterFullscreen(v, done); }
+            @Override public void onShowCustomView(View v, CustomViewCallback done) {
+                if (t == tab) enterFullscreen(v, done); else done.onCustomViewHidden();
+            }
             @Override public void onHideCustomView() { exitFullscreen(); }
 
             @Override public void onPermissionRequest(PermissionRequest r) { r.deny(); }
@@ -305,7 +419,9 @@ public class BrowserActivity extends Activity {
                 WebView catcher = new WebView(BrowserActivity.this);
                 catcher.setWebViewClient(new WebViewClient() {
                     @Override public boolean shouldOverrideUrlLoading(WebView c, WebResourceRequest r) {
-                        load(r.getUrl().toString());
+                        String u = r.getUrl().toString();
+                        applyAgentFor(v, u);
+                        v.loadUrl(u);
                         c.destroy();
                         return true;
                     }
@@ -326,7 +442,7 @@ public class BrowserActivity extends Activity {
             }
         });
         w.setDownloadListener((url, ua, disposition, mime, length) ->
-                toast("Downloads aren't supported. Open it on another device."));
+                toast("Downloads aren't supported. Open it on another device"));
         return w;
     }
 
@@ -334,32 +450,30 @@ public class BrowserActivity extends Activity {
      * Before any of a page's own scripts, in every frame: keep frames unsandboxed and, with pop-ups
      * blocked, give window.open a stand-in (assets/frames.js). Set again when the pop-up setting changes.
      */
-    private void installFrameFix(WebView w) {
+    private void installFrameFix(Tab t, WebView w) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return;
-        if (frameFix != null) frameFix.remove();
+        if (t.frameFix != null) t.frameFix.remove();
         String script;
         try (java.io.InputStream in = getAssets().open("frames.js")) {
             byte[] b = new byte[in.available()];
             int n = in.read(b);
-            script = new String(b, 0, Math.max(0, n), java.nio.charset.StandardCharsets.UTF_8);
+            script = new String(b, 0, Math.max(0, n), StandardCharsets.UTF_8);
         } catch (java.io.IOException e) {
             return;
         }
         if (popupsBlocked()) script = "window.__beeshtvBlockPopups = true;\n" + script;
-        frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
+        t.frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
     }
-
-    private boolean popupsBlocked() { return sp.getBoolean("block_popups", true); }
 
     /** Shown in place of a site the DNS service blocks. */
     private WebResourceResponse blockedPage(String host) {
         String html = "<!doctype html><meta name=viewport content='width=device-width'>"
                 + "<body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;"
-                + "justify-content:center;background:#0b0b0d;color:#f5f5f5;font:20px system-ui,sans-serif'>"
-                + "<div style='font-size:44px;font-weight:700;margin-bottom:14px'>Blocked</div>"
-                + "<div style='color:#c8c8cc'>" + TextUtils.htmlEncode(host) + " is blocked by " + dns.name() + ".</div>"
-                + "<div style='color:#8c8c92;margin-top:10px;font-size:16px'>Settings → DNS protection chooses the service, or turns it off.</div>";
-        return new WebResourceResponse("text/html", "utf-8", new ByteArrayInputStream(html.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                + "justify-content:center;background:#0b0a0a;color:#f4f1f0;font:20px system-ui,sans-serif'>"
+                + "<div style='font-size:36px;font-weight:500;margin-bottom:14px'>Blocked</div>"
+                + "<div style='color:#b8b5b4'>" + TextUtils.htmlEncode(host) + " is blocked by " + dns.name() + "</div>"
+                + "<div style='color:#7c7978;margin-top:10px;font-size:16px'>Settings, Blocking, DNS protection picks the service or turns it off</div>";
+        return new WebResourceResponse("text/html", "utf-8", new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8)));
     }
 
     private boolean adsAllowed(String host) { return host != null && sp.getBoolean("ads_ok:" + host, false); }
@@ -378,9 +492,13 @@ public class BrowserActivity extends Activity {
         return true;
     }
 
+    /** Type or say anything: a web address opens, the rest is searched. */
+    void open(String text) { load(searchOrUrl(text)); }
+    void openUrl(String url) { load(url); }
+
     private void load(String url) {
-        if (onHome) hideHome();
-        applyAgentFor(url);
+        hideStart();
+        applyAgentFor(web, url);
         web.loadUrl(url);
         address.setText(shown(url));
         exitBar();
@@ -403,26 +521,25 @@ public class BrowserActivity extends Activity {
     private String[] engine() { return ENGINES[Math.floorMod(sp.getInt("engine", 0), ENGINES.length)]; }
 
     private static String shown(String url) {
-        return url == null || url.equals("about:blank") ? "" : url;
+        return url == null || url.startsWith("about:") ? "" : url;
     }
 
     private static String hostOf(String url) {
         if (url == null || url.startsWith("about:")) return null;
-        String h = Uri.parse(url).getHost();
-        return h == null ? null : h.startsWith("www.") ? h.substring(4) : h;
+        return History.hostOf(url);
     }
 
     // ---- desktop site and zoom, both remembered per site
 
     private boolean desktopFor(String host) {
-        boolean byDefault = sp.getBoolean("desktop_default", false);
+        boolean byDefault = desktopDefault();
         return host == null ? byDefault : sp.getBoolean("desktop:" + host, byDefault);
     }
 
     /** Sets the user agent this address wants; true if it changed. */
-    private boolean applyAgentFor(String url) {
+    private boolean applyAgentFor(WebView w, String url) {
         String want = desktopFor(hostOf(url)) ? desktopUA : mobileUA;
-        WebSettings s = web.getSettings();
+        WebSettings s = w.getSettings();
         if (want.equals(s.getUserAgentString())) return false;
         s.setUserAgentString(want);
         return true;
@@ -430,19 +547,13 @@ public class BrowserActivity extends Activity {
 
     private void toggleDesktop() {
         String host = hostOf(web.getUrl());
-        if (host == null) { toast("Open a site first"); return; }
+        if (host == null) return;
         boolean on = !desktopFor(host);
         sp.edit().putBoolean("desktop:" + host, on).apply();
         toast(on ? "Desktop site for " + host : "Phone site for " + host);
-        applyAgentFor(web.getUrl());
+        applyAgentFor(web, web.getUrl());
         web.reload();
-        paintDesktop();
-    }
-
-    private void paintDesktop() {
-        if (desktopBtn == null) return;
-        boolean on = desktopFor(hostOf(web.getUrl()));
-        desktopBtn.setImageTintList(ColorStateList.valueOf(on ? AMBER : TEXT));
+        refreshBar();
     }
 
     private float zoomFor(String host) { return host == null ? 1f : sp.getFloat("zoom:" + host, 1f); }
@@ -455,13 +566,57 @@ public class BrowserActivity extends Activity {
         for (int k = 0; k < ZOOMS.length; k++) if (Math.abs(ZOOMS[k] - z) < 0.01f) i = k;
         i = Math.max(0, Math.min(ZOOMS.length - 1, i + dir));
         sp.edit().putFloat("zoom:" + host, ZOOMS[i]).apply();
-        applyZoom();
+        applyZoom(web);
         toast("Zoom " + Math.round(ZOOMS[i] * 100) + "%");
     }
 
-    private void applyZoom() {
-        float z = zoomFor(hostOf(web.getUrl()));
-        web.evaluateJavascript("document.documentElement.style.zoom='" + (z == 1f ? "" : String.valueOf(z)) + "'", null);
+    private void applyZoom(WebView w) {
+        float z = zoomFor(hostOf(w.getUrl()));
+        if (z == 1f && w.getTag() == null) return;
+        w.setTag(z == 1f ? null : z);
+        w.evaluateJavascript("document.documentElement.style.zoom='" + (z == 1f ? "" : String.valueOf(z)) + "'", null);
+    }
+
+    // ---- settings, used by Start
+
+    String engineName() { return engine()[0]; }
+
+    void cycleEngine() {
+        sp.edit().putInt("engine", Math.floorMod(sp.getInt("engine", 0) + 1, ENGINES.length)).apply();
+        address.setHint("Search " + engineName() + " or type a web address");
+    }
+
+    Dns dns() { return dns; }
+    AdBlock adblock() { return adblock; }
+    Updater updater() { return updater; }
+    History history() { return history; }
+
+    void cycleDns() { dns.setService(dns.service() + 1); }
+
+    void toggleAds() {
+        adblock.setEnabled(!adblock.enabled());
+        refreshBar();
+    }
+
+    boolean popupsBlocked() { return sp.getBoolean("block_popups", true); }
+
+    void togglePopups() {
+        sp.edit().putBoolean("block_popups", !popupsBlocked()).apply();
+        for (Tab t : tabs) if (t.web != null) installFrameFix(t, t.web);
+    }
+
+    boolean desktopDefault() { return sp.getBoolean("desktop_default", false); }
+
+    void toggleDesktopDefault() {
+        sp.edit().putBoolean("desktop_default", !desktopDefault()).apply();
+        refreshBar();
+    }
+
+    void clearSiteData() {
+        CookieManager.getInstance().removeAllCookies(null);
+        WebStorage.getInstance().deleteAllData();
+        for (Tab t : tabs) if (t.web != null) t.web.clearCache(true);
+        toast("Cookies and site data cleared");
     }
 
     // ---- full-screen video
@@ -473,10 +628,10 @@ public class BrowserActivity extends Activity {
         exitBar();
         // Only the video on screen: the page, bar and pointer underneath aren't drawn meanwhile.
         cursor.setVisibility(View.GONE);
-        web.setVisibility(View.INVISIBLE);
+        pages.setVisibility(View.INVISIBLE);
         bar.setVisibility(View.GONE);
         progress.setVisibility(View.GONE);
-        root.addView(v, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(v, root.indexOfChild(cursor), new FrameLayout.LayoutParams(-1, -1));
     }
 
     private void exitFullscreen() {
@@ -484,51 +639,57 @@ public class BrowserActivity extends Activity {
         root.removeView(fullscreen);
         fullscreen = null;
         cursor.setVisibility(View.VISIBLE);
+        pages.setVisibility(View.VISIBLE);
         bar.setVisibility(View.VISIBLE);
-        if (!onHome) {
-            web.setVisibility(View.VISIBLE);
-            progress.setVisibility(View.VISIBLE);
-        }
+        progress.setVisibility(View.VISIBLE);
         if (fullscreenDone != null) fullscreenDone.onCustomViewHidden();
         fullscreenDone = null;
     }
 
     // ---------------------------------------------------------------- the pointer
 
-    /** The pointer moved: hover the page under it, or light up the bar button under it. */
+    /** The pointer moved: light up what's under it on our own screens, or pass the hover to the page. */
     private void hover(float x, float y) {
         View hit = null;
-        if (y < web.getTop()) {
-            float bx = x - bar.getLeft(), by = y - bar.getTop();
-            for (int i = 0; i < bar.getChildCount(); i++) {
-                View v = bar.getChildAt(i);
-                if (v.getVisibility() == View.VISIBLE && v.isClickable() && bx >= v.getLeft() && bx < v.getRight()
-                        && by >= v.getTop() && by < v.getBottom()) hit = v;
-            }
-        } else {
-            mouse(MotionEvent.ACTION_HOVER_MOVE, 0, 0);
-        }
+        if (start.getVisibility() == View.VISIBLE) hit = Ui.hit(start, x, y);
+        else if (y < pages.getTop()) hit = Ui.hit(bar, x, y);
+        else hoverPage();
         if (hit == hovered) return;
-        if (hovered != null) paintHover(hovered, false);
-        if (hit != null) paintHover(hit, true);
+        if (hovered != null) hovered.setHovered(false);
+        if (hit != null) hit.setHovered(true);
         hovered = hit;
     }
 
-    private void paintHover(View v, boolean on) {
-        if (v.getBackground() instanceof GradientDrawable && !(v == updateChip)) {
-            ((GradientDrawable) v.getBackground()).setColor(on || v.hasFocus() ? FOCUS : v == address ? CURRENT : Color.TRANSPARENT);
+    /**
+     * Pages hear the pointer a few times a second, not every frame: video players show their controls
+     * on every mouse move, and a stream page re-drawing them sixty times a second stalls the whole TV.
+     */
+    private void hoverPage() {
+        main.removeCallbacks(hoverLast);
+        long now = SystemClock.uptimeMillis();
+        if (now - hoverAt >= HOVER_EVERY_MS) {
+            hoverAt = now;
+            mouse(MotionEvent.ACTION_HOVER_MOVE, 0, 0);
+        } else {
+            main.postDelayed(hoverLast, HOVER_EVERY_MS);
         }
     }
 
+    private final Runnable hoverLast = () -> {
+        hoverAt = SystemClock.uptimeMillis();
+        mouse(MotionEvent.ACTION_HOVER_MOVE, 0, 0);
+    };
+
     /** Hover and wheel scrolls go to the page as a mouse at the pointer, so menus open and inner panes scroll. */
     private void mouse(int action, float dx, float dy) {
+        if (web == null) return;
         MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
         pp.id = 0;
         pp.toolType = MotionEvent.TOOL_TYPE_MOUSE;
         MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
         // In the page's own coordinates; scrolling over the bar scrolls the top of the page.
-        pc.x = cursor.pointerX() - web.getLeft();
-        pc.y = Math.max(0, Math.min(web.getHeight() - 1, cursor.pointerY() - web.getTop()));
+        pc.x = cursor.pointerX() - pages.getLeft();
+        pc.y = Math.max(0, Math.min(pages.getHeight() - 1, cursor.pointerY() - pages.getTop()));
         if (action == MotionEvent.ACTION_SCROLL) {
             ViewConfiguration vc = ViewConfiguration.get(this);
             pc.setAxisValue(MotionEvent.AXIS_VSCROLL, -dy / vc.getScaledVerticalScrollFactor());
@@ -543,7 +704,7 @@ public class BrowserActivity extends Activity {
 
     /**
      * OK is a finger at the pointer, down when pressed and up when let go (hold = long press), on
-     * whatever is there: a bar button, the address, or the page.
+     * whatever is there: a button, a field, a site on Home, or the page.
      */
     private void touch(int action) {
         long now = SystemClock.uptimeMillis();
@@ -556,7 +717,8 @@ public class BrowserActivity extends Activity {
 
     private void scrollPage(int dir) {
         cursor.wake();
-        mouse(MotionEvent.ACTION_SCROLL, 0, dir * web.getHeight() * 0.8f);
+        if (start.getVisibility() == View.VISIBLE) start.scrollBy(dir * root.getHeight() * 0.6f);
+        else mouse(MotionEvent.ACTION_SCROLL, 0, dir * pages.getHeight() * 0.8f);
     }
 
     // ---------------------------------------------------------------- keys
@@ -565,17 +727,18 @@ public class BrowserActivity extends Activity {
     public boolean dispatchKeyEvent(KeyEvent e) {
         int code = e.getKeyCode();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+        boolean onStart = start.getVisibility() == View.VISIBLE;
 
         if (fullscreen != null) {
             if (code == KeyEvent.KEYCODE_BACK) { if (!down) web.evaluateJavascript("document.exitFullscreen()", null); return true; }
             return super.dispatchKeyEvent(e);
         }
-        if (panel.getVisibility() == View.VISIBLE) {
-            if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_MENU) { if (!down) hidePanel(); return true; }
-            return super.dispatchKeyEvent(e);
-        }
         if (code == KeyEvent.KEYCODE_MENU) {
-            if (!down) { if (inBar) exitBar(); else enterBar(); }
+            if (!down) {
+                if (onStart) start.focusSearch();
+                else if (inBar) exitBar();
+                else enterBar();
+            }
             return true;
         }
         if (inBar) {
@@ -584,6 +747,15 @@ public class BrowserActivity extends Activity {
             if (code == KeyEvent.KEYCODE_DPAD_UP) return true;
             return super.dispatchKeyEvent(e);
         }
+        // Typing in a field on the start screen: the keyboard has the keys.
+        View f = getCurrentFocus();
+        if (onStart && f instanceof EditText && code != KeyEvent.KEYCODE_BACK
+                && code != KeyEvent.KEYCODE_DPAD_UP && code != KeyEvent.KEYCODE_DPAD_DOWN) {
+            return super.dispatchKeyEvent(e);
+        }
+
+        // Moving the pointer up or down leaves a field on the start screen.
+        if (onStart && f instanceof EditText && down) { hideKeyboard(f); root.requestFocus(); }
 
         switch (code) {
             case KeyEvent.KEYCODE_DPAD_UP: cursor.press(CursorView.UP, down); return true;
@@ -600,9 +772,16 @@ public class BrowserActivity extends Activity {
                 return true;
             case KeyEvent.KEYCODE_BACK:
                 if (down) return true;
-                if (!onHome && web.canGoBack()) { web.goBack(); return true; }
-                if (!onHome) { showHome(); return true; }
-                // On the home page, Back twice closes the browser.
+                if (onStart) {
+                    if (f instanceof EditText) { root.requestFocus(); hideKeyboard(f); return true; }
+                    if (start.back()) return true;
+                    if (!tab.empty()) { hideStart(); return true; }
+                } else {
+                    if (web.canGoBack()) { web.goBack(); return true; }
+                    showStart(Start.Page.HOME);
+                    return true;
+                }
+                // On Home with nothing behind it, Back twice closes the browser.
                 long now = SystemClock.uptimeMillis();
                 if (now - backAt < 2000) finish();
                 else { backAt = now; toast("Press Back again to close"); }
@@ -624,49 +803,40 @@ public class BrowserActivity extends Activity {
     private View buildBar() {
         bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(10), 0, dp(10), 0);
+        bar.setPadding(dp(6), 0, dp(6), 0);
         GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(30));
-        bg.setColor(GLASS);
-        bg.setStroke(Math.max(1, dp(0.75f)), 0x26FFFFFF);
+        bg.setCornerRadius(dp(14));
+        bg.setColor(Ui.SURFACE);
+        bg.setStroke(Math.max(1, dp(0.75f)), Ui.HAIRLINE);
         bar.setBackground(bg);
-        bar.setElevation(dp(6));
 
         bar.addView(button(R.drawable.ic_back, "Back", v -> { if (web.canGoBack()) web.goBack(); }));
         bar.addView(button(R.drawable.ic_forward, "Forward", v -> { if (web.canGoForward()) web.goForward(); }));
-        bar.addView(button(R.drawable.ic_reload, "Reload", v -> { if (!onHome) web.reload(); }));
-        bar.addView(button(R.drawable.ic_home, "Home", v -> showHome()));
+        bar.addView(button(R.drawable.ic_reload, "Reload", v -> web.reload()));
+        bar.addView(button(R.drawable.ic_home, "Home", v -> showStart(Start.Page.HOME)));
 
         address = new EditText(this);
         address.setSingleLine(true);
-        address.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        address.setTypeface(face(500));
-        address.setTextColor(TEXT);
-        address.setHintTextColor(0x99FFFFFF);
-        address.setHint("Search " + engine()[0] + " or type a web address");
+        address.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        address.setTypeface(Ui.face(this, 400));
+        address.setTextColor(Ui.TEXT);
+        address.setHintTextColor(Ui.TEXT_3);
+        address.setHint("Search " + engineName() + " or type a web address");
         address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         address.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         address.setSelectAllOnFocus(true);
-        address.setPadding(dp(18), 0, dp(18), 0);
-        address.setCompoundDrawablesRelative(icon(R.drawable.ic_search, TEXT_2, 18), null, null, null);
+        address.setPadding(dp(14), 0, dp(14), 0);
+        address.setCompoundDrawablesRelative(Ui.icon(this, R.drawable.ic_search, Ui.TEXT_3, 16), null, null, null);
         address.setCompoundDrawablePadding(dp(10));
-        GradientDrawable field = new GradientDrawable();
-        field.setCornerRadius(dp(22));
-        field.setColor(CURRENT);
-        address.setBackground(field);
-        address.setOnFocusChangeListener((v, has) -> {
-            field.setColor(has ? FOCUS : CURRENT);
-            field.setStroke(has ? dp(2) : 0, TEXT);
-        });
+        address.setBackground(Ui.surface(this, 10, Ui.FROST));
         address.setOnEditorActionListener((v, action, ev) -> {
             String t = address.getText().toString();
             if (t.trim().isEmpty()) return true;
-            InputMethodManager imm = getSystemService(InputMethodManager.class);
-            if (imm != null) imm.hideSoftInputFromWindow(address.getWindowToken(), 0);
+            hideKeyboard(address);
             load(searchOrUrl(t));
             return true;
         });
-        bar.addView(address, llp(0, dp(44), 1f, dp(8), dp(8)));
+        bar.addView(address, llp(0, dp(40), 1f, dp(8), dp(8)));
 
         bar.addView(button(R.drawable.ic_mic, "Voice search", v -> voice()));
         // Ads on or off for this site (a site that won't play with ads blocked can be let through).
@@ -677,35 +847,45 @@ public class BrowserActivity extends Activity {
             boolean allow = !adsAllowed(h);
             sp.edit().putBoolean("ads_ok:" + h, allow).apply();
             toast(allow ? "Ads allowed on " + h : "Blocking ads on " + h);
-            paintShield();
             web.reload();
+            refreshBar();
         });
         bar.addView(shieldBtn);
-        blockedCount = text(13, 700, AMBER);
-        bar.addView(blockedCount, llp(-2, -2, -dp(2), dp(6)));
+        blockedCount = Ui.figures(this, 13, 400, Ui.TEXT_3);
+        bar.addView(blockedCount, llp(-2, -2, 0f, 0, dp(4)));
         desktopBtn = button(R.drawable.ic_desktop, "Desktop site", v -> toggleDesktop());
         bar.addView(desktopBtn);
-        zoomOutBtn = button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1));
-        zoomInBtn = button(R.drawable.ic_zoom_in, "Zoom in", v -> stepZoom(1));
-        bar.addView(zoomOutBtn);
-        bar.addView(zoomInBtn);
+        bar.addView(button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1)));
+        bar.addView(button(R.drawable.ic_zoom_in, "Zoom in", v -> stepZoom(1)));
+        bar.addView(button(R.drawable.ic_tabs, "Tabs", v -> showStart(Start.Page.TABS)));
+        tabCount = Ui.figures(this, 13, 400, Ui.TEXT_3);
+        bar.addView(tabCount, llp(-2, -2, 0f, 0, dp(4)));
 
-        updateChip = text(13, 700, 0xFF111111);
-        updateChip.setPadding(dp(14), dp(7), dp(14), dp(7));
-        updateChip.setFocusable(true);
-        GradientDrawable ub = new GradientDrawable();
-        ub.setCornerRadius(dp(16));
-        ub.setColor(0xD9FFFFFF);
-        updateChip.setBackground(ub);
-        updateChip.setOnFocusChangeListener((v, has) -> ub.setColor(has ? 0xFFFFFFFF : 0xD9FFFFFF));
-        updateChip.setOnClickListener(v -> installUpdate());
-        updateChip.setVisibility(View.GONE);
-        bar.addView(updateChip, llp(-2, -2, dp(6), dp(6)));
+        updateBtn = Ui.text(this, 13, 500, Ui.TEXT);
+        updateBtn.setPadding(dp(12), dp(8), dp(12), dp(8));
+        updateBtn.setBackground(Ui.surface(this, 8, Ui.FROST));
+        updateBtn.setFocusable(true);
+        updateBtn.setClickable(true);
+        updateBtn.setOnClickListener(v -> installUpdate());
+        updateBtn.setVisibility(View.GONE);
+        bar.addView(updateBtn, llp(-2, -2, 0f, dp(4), dp(4)));
 
-        settingsBtn = button(R.drawable.ic_settings, "Settings", v -> showPanel());
-        bar.addView(settingsBtn);
-        paintShield();
+        bar.addView(button(R.drawable.ic_settings, "Settings", v -> showStart(Start.Page.SETTINGS)));
         return bar;
+    }
+
+    /** The bar shows the current tab: its address, what's blocked, desktop or phone site. */
+    private void refreshBar() {
+        if (tab == null || address == null) return;
+        if (!address.hasFocus()) address.setText(shown(tab.url()));
+        String h = tab.host;
+        boolean site = h != null;
+        boolean shielded = adblock.enabled() && !adsAllowed(h);
+        shieldBtn.setImageTintList(ColorStateList.valueOf(shielded ? Ui.TEXT : Ui.TEXT_3));
+        showBlocked(tab.blocked.get());
+        desktopBtn.setSelected(site && desktopFor(h));
+        desktopBtn.setImageTintList(ColorStateList.valueOf(desktopBtn.isSelected() ? Ui.TEXT : Ui.TEXT_2));
+        tabCount.setText(String.valueOf(tabs.size()));
     }
 
     /** Menu: the D-pad moves between the bar's buttons, starting at the address, until Down or Back. */
@@ -718,54 +898,47 @@ public class BrowserActivity extends Activity {
     /** Back to the pointer. */
     private void exitBar() {
         inBar = false;
-        InputMethodManager imm = getSystemService(InputMethodManager.class);
-        if (imm != null) imm.hideSoftInputFromWindow(address.getWindowToken(), 0);
-        if (address.hasFocus()) address.setText(onHome ? "" : shown(web.getUrl()));
-        if (onHome) home.requestFocus(); else web.requestFocus();
+        hideKeyboard(address);
+        if (address.hasFocus()) address.setText(shown(web.getUrl()));
+        web.requestFocus();
         cursor.wake();
     }
 
+    private void hideKeyboard(View v) {
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        if (imm != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+    }
+
     private void showBlocked(int n) {
-        blockedCount.setText(n > 0 && adblock.enabled() ? String.valueOf(n) : "");
+        blockedCount.setText(n > 0 && adblock.enabled() && !adsAllowed(tab.host) ? String.valueOf(n) : "");
     }
 
-    private void paintShield() {
-        boolean on = adblock.enabled() && !adsAllowed(hostOf(web.getUrl()));
-        shieldBtn.setImageTintList(ColorStateList.valueOf(on ? AMBER : TEXT_2));
-    }
+    // ---- the start screen
 
-    // ---- the home page
-
-    private void showHome() {
-        onHome = true;
+    void showStart(Start.Page p) {
         // Nothing keeps playing behind it.
-        web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
-        web.setVisibility(View.INVISIBLE);
-        progress.setVisibility(View.INVISIBLE);
-        home.setVisibility(View.VISIBLE);
-        home.refresh();
-        address.setText("");
-        setHomeMode(true);
+        if (web != null) web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
         exitBar();
-    }
-
-    private void hideHome() {
-        onHome = false;
-        home.setVisibility(View.GONE);
-        web.setVisibility(View.VISIBLE);
-        progress.setVisibility(View.VISIBLE);
-        setHomeMode(false);
-    }
-
-    /** On the home page the bar is see-through and only has what makes sense without a site. */
-    private void setHomeMode(boolean on) {
-        for (View v : new View[]{shieldBtn, blockedCount, desktopBtn, zoomOutBtn, zoomInBtn}) {
-            v.setVisibility(on ? View.GONE : View.VISIBLE);
+        if (start.getVisibility() != View.VISIBLE) {
+            start.setVisibility(View.VISIBLE);
+            start.setAlpha(0f);
+            start.animate().alpha(1f).setDuration(160).start();
         }
-        ((GradientDrawable) bar.getBackground()).setColor(on ? 0x8C101014 : GLASS);
+        start.show(p);
+        start.refresh();
+        pages.setVisibility(View.INVISIBLE);
+        hovered = null;
+        root.requestFocus();
     }
 
-    private void voice() {
+    private void hideStart() {
+        start.setVisibility(View.GONE);
+        pages.setVisibility(View.VISIBLE);
+        hovered = null;
+        refreshBar();
+    }
+
+    void voice() {
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH)
                 .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a search or a website");
@@ -784,156 +957,17 @@ public class BrowserActivity extends Activity {
         if (said != null && !said.isEmpty()) load(searchOrUrl(said.get(0)));
     }
 
-    // ---------------------------------------------------------------- settings
-
-    private View buildPanel() {
-        panelScroll = new ScrollView(this);
-        panelScroll.setVerticalScrollBarEnabled(false);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(24));
-        bg.setColor(GLASS);
-        bg.setStroke(Math.max(1, dp(0.75f)), 0x26FFFFFF);
-        panelScroll.setBackground(bg);
-        panelScroll.setElevation(dp(8));
-        panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(10), dp(14), dp(10), dp(14));
-        panelScroll.addView(panel, new FrameLayout.LayoutParams(-1, -2));
-        panel.setVisibility(View.GONE);
-        panelScroll.setVisibility(View.GONE);
-        return panelScroll;
-    }
-
-    private void showPanel() {
-        fillPanel();
-        panel.setVisibility(View.VISIBLE);
-        panelScroll.setVisibility(View.VISIBLE);
-        panelScroll.setAlpha(0f);
-        panelScroll.animate().alpha(1f).setDuration(180).start();
-        if (panel.getChildCount() > 1) panel.getChildAt(1).requestFocus();
-    }
-
-    private void hidePanel() {
-        panel.setVisibility(View.GONE);
-        panelScroll.setVisibility(View.GONE);
-        if (inBar) settingsBtn.requestFocus(); else web.requestFocus();
-    }
-
-    /** Rebuilds the rows in place, keeping focus on the same row. */
-    private void refillPanel() {
-        View f = getCurrentFocus();
-        int at = f == null ? -1 : panel.indexOfChild(f);
-        fillPanel();
-        if (at >= 0 && at < panel.getChildCount()) panel.getChildAt(at).requestFocus();
-    }
-
-    private void fillPanel() {
-        panel.removeAllViews();
-        TextView title = text(19, 650, TEXT);
-        title.setText("Settings");
-        title.setPadding(dp(12), 0, dp(12), dp(10));
-        panel.addView(title);
-
-        row("Search engine", engine()[0], () -> {
-            sp.edit().putInt("engine", Math.floorMod(sp.getInt("engine", 0) + 1, ENGINES.length)).apply();
-            address.setHint("Search " + engine()[0] + " or type a web address");
-            refillPanel();
-        });
-        row("Home page background", Home.BACKGROUNDS[home.background()], () -> {
-            home.setBackground(home.background() + 1);
-            refillPanel();
-        });
-        row("DNS protection", dns.name(), () -> {
-            dns.setService(dns.service() + 1);
-            refillPanel();
-            if (!onHome) web.reload();
-        });
-        row("Block pop-ups", popupsBlocked() ? "On" : "Off", () -> {
-            sp.edit().putBoolean("block_popups", !popupsBlocked()).apply();
-            installFrameFix(web);
-            refillPanel();
-            if (!onHome) web.reload();
-        });
-        row("Block ads and trackers", adblock.enabled() ? "On" : "Off", () -> {
-            adblock.setEnabled(!adblock.enabled());
-            paintShield();
-            refillPanel();
-        });
-        long at = adblock.updatedAt();
-        row("Block list", String.format(Locale.getDefault(), "%,d sites", adblock.size()) + " · "
-                + (at == 0 ? "starter list" : "updated " + DateUtils.getRelativeTimeSpanString(at)), () -> {
-            toast("Updating the block list…");
-            adblock.refreshIfDue(true, () -> { toast("Block list: " + String.format(Locale.getDefault(), "%,d sites", adblock.size())); refillPanel(); });
-        });
-        row("Desktop sites by default", sp.getBoolean("desktop_default", false) ? "On" : "Off", () -> {
-            sp.edit().putBoolean("desktop_default", !sp.getBoolean("desktop_default", false)).apply();
-            refillPanel();
-            if (applyAgentFor(web.getUrl())) web.reload();
-            paintDesktop();
-        });
-        row("Clear cookies and history", null, () -> {
-            CookieManager.getInstance().removeAllCookies(null);
-            WebStorage.getInstance().deleteAllData();
-            web.clearCache(true);
-            web.clearHistory();
-            toast("Cookies, site data and history cleared");
-        });
-        row("Open links from other apps", "How", () -> toast(
-                "When an app opens a web page, choose BeeshTV Browser and Always"));
-        row("Updates", updateSummary(), () -> {
-            if (updater.state() == Updater.State.READY) installUpdate(); else updater.check(true);
-            refillPanel();
-        });
-        if (!updater.canInstall()) row("Allow installing updates", "Allow", () -> startActivity(updater.installPermissionScreen()));
-        row("About", "Version " + updater.installed() + " · Bishwo Bhusal", null);
-    }
-
-    private void row(String label, String value, Runnable click) {
-        LinearLayout r = new LinearLayout(this);
-        r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setPadding(dp(14), 0, dp(14), 0);
-        r.setFocusable(true);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(14));
-        bg.setColor(Color.TRANSPARENT);
-        r.setBackground(bg);
-        r.setOnFocusChangeListener((v, has) -> bg.setColor(has ? FOCUS : Color.TRANSPARENT));
-        if (click != null) r.setOnClickListener(v -> click.run());
-        TextView l = text(15, 500, TEXT);
-        l.setText(label);
-        l.setEllipsize(TextUtils.TruncateAt.END);
-        r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
-        if (value != null) {
-            TextView v = text(13, 500, TEXT_2);
-            v.setText(value);
-            v.setEllipsize(TextUtils.TruncateAt.END);
-            r.addView(v, llp(-2, -2, dp(12), 0));
-        }
-        panel.addView(r, new LinearLayout.LayoutParams(-1, dp(46)));
-    }
-
     // ---------------------------------------------------------------- updates
 
-    private String updateSummary() {
-        switch (updater.state()) {
-            case CHECKING: return "Checking…";
-            case DOWNLOADING: return "Downloading " + updater.progress() + "%";
-            case READY: return "Install " + updater.latest();
-            case UP_TO_DATE: return "Up to date";
-            case FAILED: return updater.error();
-            default: return "Check now";
-        }
-    }
-
     private void onUpdateChanged() {
-        if (updateChip == null) return;
+        if (updateBtn == null) return;
         boolean ready = updater.state() == Updater.State.READY;
-        updateChip.setText("Update " + updater.latest());
-        updateChip.setVisibility(ready ? View.VISIBLE : View.GONE);
-        if (panel != null && panel.getVisibility() == View.VISIBLE) refillPanel();
+        updateBtn.setText("Update to " + updater.latest());
+        updateBtn.setVisibility(ready ? View.VISIBLE : View.GONE);
+        if (start != null) start.onUpdateChanged();
     }
 
-    private void installUpdate() {
+    void installUpdate() {
         if (!updater.canInstall()) {
             toast("Allow BeeshTV Browser to install apps, then press Back and choose Update again");
             startActivity(updater.installPermissionScreen());
@@ -947,57 +981,19 @@ public class BrowserActivity extends Activity {
     private ImageView button(int icon, String label, View.OnClickListener click) {
         ImageView b = new ImageView(this);
         b.setImageResource(icon);
-        b.setImageTintList(ColorStateList.valueOf(TEXT));
-        b.setPadding(dp(10), dp(10), dp(10), dp(10));
+        b.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
+        b.setPadding(dp(11), dp(11), dp(11), dp(11));
         b.setFocusable(true);
         b.setContentDescription(label);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.OVAL);
-        bg.setColor(Color.TRANSPARENT);
-        b.setBackground(bg);
-        b.setOnFocusChangeListener((v, has) -> bg.setColor(has ? FOCUS : Color.TRANSPARENT));
+        b.setBackground(Ui.surface(this, 10, 0));
         b.setOnClickListener(click);
-        b.setLayoutParams(llp(dp(44), dp(44), dp(2), dp(2)));
+        b.setLayoutParams(llp(dp(42), dp(42), 0f, dp(1), dp(1)));
         return b;
-    }
-
-    private TextView text(float sp, int weight, int color) {
-        TextView t = new TextView(this);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        t.setTypeface(face(weight));
-        t.setTextColor(color);
-        t.setSingleLine(true);
-        t.setIncludeFontPadding(false);
-        return t;
-    }
-
-    private final java.util.Map<Integer, Typeface> faces = new java.util.HashMap<>();
-
-    /** Schibsted Grotesk at an exact weight, as on BeeshTV's Home. */
-    private Typeface face(int weight) {
-        Typeface t = faces.get(weight);
-        if (t != null) return t;
-        try {
-            t = new Typeface.Builder(getAssets(), "fonts/SchibstedGrotesk.ttf")
-                    .setFontVariationSettings("'wght' " + weight).build();
-        } catch (RuntimeException e) {
-            t = null;
-        }
-        if (t == null) t = Typeface.DEFAULT;
-        faces.put(weight, t);
-        return t;
-    }
-
-    private android.graphics.drawable.Drawable icon(int res, int color, int sizeDp) {
-        android.graphics.drawable.Drawable d = getDrawable(res).mutate();
-        d.setTint(color);
-        d.setBounds(0, 0, dp(sizeDp), dp(sizeDp));
-        return d;
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
-    private int dp(float v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private int dp(float v) { return Ui.dp(this, v); }
 
     private static FrameLayout.LayoutParams lp(int w, int h, int gravity, int l, int t, int r, int b) {
         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
@@ -1009,9 +1005,5 @@ public class BrowserActivity extends Activity {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h, weight);
         p.setMargins(l, 0, r, 0);
         return p;
-    }
-
-    private static LinearLayout.LayoutParams llp(int w, int h, int l, int r) {
-        return llp(w, h, 0f, l, r);
     }
 }

@@ -1,25 +1,41 @@
 package com.beeshtv.browser;
 
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.RadialGradient;
+import android.graphics.Rect;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.util.TypedValue;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.TextView;
 
 import java.util.HashMap;
 import java.util.Map;
 
-/** Colours, type and small view helpers, matching BeeshTV Launcher. */
+/**
+ * The browser's look: a living room at night. Near-black neutrals with a trace of red in them, white
+ * text in three strengths, frosted surfaces (a faint white fill and a hairline edge, no glow), and
+ * one accent, the red of a TV's standby light, kept for the current item and the loading line.
+ */
 final class Ui {
     private Ui() { }
 
-    // White on glass, as on BeeshTV's Home.
-    static final int TEXT = 0xFFFFFFFF, TEXT_2 = 0xCCFFFFFF, TEXT_3 = 0x99FFFFFF;
-    static final int FOCUS = 0x3DFFFFFF, CURRENT = 0x1FFFFFFF;
-    static final int GLASS = 0xEB151518, AMBER = 0xFFFFB01F;
-    /** Frosted panels over the home page photo. */
-    static final int HOME_GLASS = 0x29FFFFFF, HOME_EDGE = 0x33FFFFFF;
+    // Neutral ramp.
+    static final int BG = 0xFF0B0A0A, SURFACE = 0xFF151313;
+    static final int TEXT = 0xFFF4F1F0, TEXT_2 = 0xB3F4F1F0, TEXT_3 = 0x73F4F1F0;
+    /** Hairline borders and frosted fills, as fractions of white. */
+    static final int HAIRLINE = 0x1AFFFFFF, FROST = 0x0FFFFFFF, HOVER = 0x1FFFFFFF, SELECTED = 0x17FFFFFF;
+    /** The standby light. */
+    static final int RED = 0xFFE5484D;
 
     private static final Map<Integer, Typeface> FACES = new HashMap<>();
 
@@ -48,7 +64,14 @@ final class Ui {
         return t;
     }
 
-    /** White text on a photo gets a soft shadow so it holds up on bright skies. */
+    /** Figures that keep one width, for clocks and counts. */
+    static TextView figures(Context c, float sp, int weight, int color) {
+        TextView t = text(c, sp, weight, color);
+        t.setFontFeatureSettings("tnum");
+        return t;
+    }
+
+    /** White text over a photo gets a soft shadow so it holds up on bright skies. */
     static TextView onPhoto(TextView t) {
         t.setShadowLayer(dp(t.getContext(), 8), 0, dp(t.getContext(), 1), 0x80000000);
         return t;
@@ -61,13 +84,78 @@ final class Ui {
         return d;
     }
 
-    /** A rounded glass fill with a faint edge, for panels over the photo. */
-    static GradientDrawable glass(Context c, float radiusDp, int fill) {
+    /** A frosted panel: faint white fill, hairline edge. */
+    static GradientDrawable frost(Context c, float radiusDp) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(c, radiusDp));
-        g.setColor(fill);
-        g.setStroke(Math.max(1, dp(c, 0.75f)), HOME_EDGE);
+        g.setColor(FROST);
+        g.setStroke(Math.max(1, dp(c, 0.75f)), HAIRLINE);
         return g;
+    }
+
+    /**
+     * Anything you can point at and click: nothing at rest, a frosted step when the pointer is over it
+     * (hovered) or the remote is on it (focused), a fainter step when it's the current one (selected).
+     * Pass a resting fill for things that need a shape even at rest, like a field.
+     */
+    static StateListDrawable surface(Context c, float radiusDp, int rest) {
+        StateListDrawable s = new StateListDrawable();
+        s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, HOVER, true));
+        s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, HOVER, true));
+        s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, HOVER, true));
+        s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, SELECTED, true));
+        s.addState(new int[]{}, fill(c, radiusDp, rest, rest != 0));
+        s.setEnterFadeDuration(90);
+        s.setExitFadeDuration(120);
+        return s;
+    }
+
+    private static GradientDrawable fill(Context c, float radiusDp, int color, boolean edge) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(c, radiusDp));
+        g.setColor(color);
+        if (edge) g.setStroke(Math.max(1, dp(c, 0.75f)), HAIRLINE);
+        return g;
+    }
+
+    /** The plain background: near black, with the faint red of a standby light low in one corner. */
+    static final class Night extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        @Override protected void onBoundsChange(Rect b) {
+            float r = Math.max(b.width(), b.height()) * 0.7f;
+            paint.setShader(new RadialGradient(b.left + b.width() * 0.08f, b.bottom + b.height() * 0.1f, r,
+                    new int[]{0x33B8262E, 0x14B8262E, 0x00B8262E}, new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
+        }
+
+        @Override public void draw(Canvas c) {
+            c.drawColor(BG);
+            c.drawRect(getBounds(), paint);
+        }
+
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(ColorFilter f) { }
+        @Override public int getOpacity() { return PixelFormat.OPAQUE; }
+    }
+
+    /**
+     * The clickable view under a point on screen, topmost first, or null. Views that are hidden,
+     * see-through or not clickable are passed over; a field counts as clickable.
+     */
+    static View hit(ViewGroup g, float x, float y) {
+        int[] at = new int[2];
+        for (int i = g.getChildCount() - 1; i >= 0; i--) {
+            View c = g.getChildAt(i);
+            if (c.getVisibility() != View.VISIBLE || c.getAlpha() == 0f) continue;
+            c.getLocationInWindow(at);
+            if (x < at[0] || y < at[1] || x >= at[0] + c.getWidth() || y >= at[1] + c.getHeight()) continue;
+            if (c instanceof ViewGroup) {
+                View d = hit((ViewGroup) c, x, y);
+                if (d != null) return d;
+            }
+            if (c.isClickable() || c instanceof EditText) return c;
+        }
+        return null;
     }
 
     static int dp(Context c, float v) { return Math.round(v * c.getResources().getDisplayMetrics().density); }
