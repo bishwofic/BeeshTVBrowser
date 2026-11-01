@@ -54,10 +54,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A browser for the remote: the page fills the screen and a pointer moves over it with the D-pad
- * (OK clicks, pushing against an edge scrolls). Menu, or Up at the top of a page, brings down the
- * bar: back, forward, reload, the address (a web address opens, anything else is searched), voice,
- * ad blocking, desktop site, zoom and settings.
+ * A browser for the remote. The bar sits above the page: back, forward, reload, the address (a web
+ * address opens, anything else is searched), voice, ad blocking, desktop site, zoom and settings.
+ * A pointer moves over everything with the D-pad, like a mouse: OK clicks whatever is under it, the
+ * bar's buttons included, and pushing it against an edge scrolls the page. Menu jumps to the
+ * address to type.
  */
 public class BrowserActivity extends Activity {
 
@@ -91,8 +92,10 @@ public class BrowserActivity extends Activity {
     private WebChromeClient.CustomViewCallback fullscreenDone;
     private final AtomicInteger blocked = new AtomicInteger();
     private String mobileUA, desktopUA;
-    private boolean barShown;
-    private long touchDownAt;
+    /** The D-pad is moving between the bar's buttons (after Menu) rather than the pointer. */
+    private boolean inBar;
+    private long touchDownAt, backAt;
+    private View hovered;
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -106,30 +109,33 @@ public class BrowserActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
 
+        // The bar is always there, above the page; the pointer moves over both.
+        int barTop = dp(14), barH = dp(60), pageTop = barTop + barH + dp(12);
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF0B0B0D);
         web = buildWebView();
-        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
-        cursor = new CursorView(this);
-        cursor.setListener(new CursorView.Listener() {
-            @Override public void onMove(float x, float y) { mouse(MotionEvent.ACTION_HOVER_MOVE, 0, 0); }
-            @Override public void onEdge(float dx, float dy) { mouse(MotionEvent.ACTION_SCROLL, dx, dy); }
-        });
-        root.addView(cursor, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(web, lp(-1, -1, Gravity.TOP, 0, pageTop, 0, 0));
         progress = new View(this);
         progress.setBackgroundColor(AMBER);
         progress.setPivotX(0);
         progress.setScaleX(0);
-        root.addView(progress, new FrameLayout.LayoutParams(-1, dp(3), Gravity.TOP));
-        root.addView(buildBar(), lp(-1, dp(60), Gravity.TOP, dp(28), dp(18), dp(28), 0));
-        root.addView(buildPanel(), lp(dp(440), -1, Gravity.END, 0, dp(18), dp(28), dp(18)));
+        root.addView(progress, lp(-1, dp(3), Gravity.TOP, 0, pageTop, 0, 0));
+        root.addView(buildBar(), lp(-1, barH, Gravity.TOP, dp(28), barTop, dp(28), 0));
+        root.addView(buildPanel(), lp(dp(440), -1, Gravity.END, 0, pageTop, dp(28), dp(18)));
+        cursor = new CursorView(this);
+        cursor.setListener(new CursorView.Listener() {
+            @Override public void onMove(float x, float y) { hover(x, y); }
+            @Override public void onEdge(float dx, float dy) { mouse(MotionEvent.ACTION_SCROLL, dx, dy); }
+        });
+        int c = CursorView.sizePx(this);
+        root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         setContentView(root);
 
         String url = urlFrom(getIntent());
         if (url == null) url = sp.getString("last_url", null);
         if (url == null || url.equals(START)) {
             web.loadUrl(START);
-            showBar();
+            enterBar();
         } else {
             load(url);
         }
@@ -294,7 +300,7 @@ public class BrowserActivity extends Activity {
         applyAgentFor(url);
         web.loadUrl(url);
         address.setText(shown(url));
-        hideBar();
+        exitBar();
     }
 
     /** A web address opens as is (https:// added); anything else is searched. */
@@ -381,7 +387,7 @@ public class BrowserActivity extends Activity {
         if (fullscreen != null) { done.onCustomViewHidden(); return; }
         fullscreen = v;
         fullscreenDone = done;
-        hideBar();
+        exitBar();
         cursor.setVisibility(View.GONE);
         root.addView(v, new FrameLayout.LayoutParams(-1, -1));
     }
@@ -397,14 +403,40 @@ public class BrowserActivity extends Activity {
 
     // ---------------------------------------------------------------- the pointer
 
+    /** The pointer moved: hover the page under it, or light up the bar button under it. */
+    private void hover(float x, float y) {
+        View hit = null;
+        if (y < web.getTop()) {
+            float bx = x - bar.getLeft(), by = y - bar.getTop();
+            for (int i = 0; i < bar.getChildCount(); i++) {
+                View v = bar.getChildAt(i);
+                if (v.getVisibility() == View.VISIBLE && v.isClickable() && bx >= v.getLeft() && bx < v.getRight()
+                        && by >= v.getTop() && by < v.getBottom()) hit = v;
+            }
+        } else {
+            mouse(MotionEvent.ACTION_HOVER_MOVE, 0, 0);
+        }
+        if (hit == hovered) return;
+        if (hovered != null) paintHover(hovered, false);
+        if (hit != null) paintHover(hit, true);
+        hovered = hit;
+    }
+
+    private void paintHover(View v, boolean on) {
+        if (v.getBackground() instanceof GradientDrawable && !(v == updateChip)) {
+            ((GradientDrawable) v.getBackground()).setColor(on || v.hasFocus() ? FOCUS : v == address ? CURRENT : Color.TRANSPARENT);
+        }
+    }
+
     /** Hover and wheel scrolls go to the page as a mouse at the pointer, so menus open and inner panes scroll. */
     private void mouse(int action, float dx, float dy) {
         MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
         pp.id = 0;
         pp.toolType = MotionEvent.TOOL_TYPE_MOUSE;
         MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
-        pc.x = cursor.pointerX();
-        pc.y = cursor.pointerY();
+        // In the page's own coordinates; scrolling over the bar scrolls the top of the page.
+        pc.x = cursor.pointerX() - web.getLeft();
+        pc.y = Math.max(0, Math.min(web.getHeight() - 1, cursor.pointerY() - web.getTop()));
         if (action == MotionEvent.ACTION_SCROLL) {
             ViewConfiguration vc = ViewConfiguration.get(this);
             pc.setAxisValue(MotionEvent.AXIS_VSCROLL, -dy / vc.getScaledVerticalScrollFactor());
@@ -417,13 +449,16 @@ public class BrowserActivity extends Activity {
         e.recycle();
     }
 
-    /** OK is a finger on the page at the pointer: down when pressed, up when let go (hold = long press). */
+    /**
+     * OK is a finger at the pointer, down when pressed and up when let go (hold = long press), on
+     * whatever is there: a bar button, the address, or the page.
+     */
     private void touch(int action) {
         long now = SystemClock.uptimeMillis();
         if (action == MotionEvent.ACTION_DOWN) touchDownAt = now;
         MotionEvent e = MotionEvent.obtain(touchDownAt, now, action, cursor.pointerX(), cursor.pointerY(), 0);
         e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        web.dispatchTouchEvent(e);
+        root.dispatchTouchEvent(e);
         e.recycle();
     }
 
@@ -448,25 +483,18 @@ public class BrowserActivity extends Activity {
             return super.dispatchKeyEvent(e);
         }
         if (code == KeyEvent.KEYCODE_MENU) {
-            if (!down) { if (barShown) hideBar(); else showBar(); }
+            if (!down) { if (inBar) exitBar(); else enterBar(); }
             return true;
         }
-        if (barShown) {
-            if (code == KeyEvent.KEYCODE_BACK) { if (!down) hideBar(); return true; }
-            if (code == KeyEvent.KEYCODE_DPAD_DOWN) { if (down) hideBar(); return true; }
+        if (inBar) {
+            if (code == KeyEvent.KEYCODE_BACK) { if (!down) exitBar(); return true; }
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN) { if (down) exitBar(); return true; }
             if (code == KeyEvent.KEYCODE_DPAD_UP) return true;
             return super.dispatchKeyEvent(e);
         }
 
         switch (code) {
-            case KeyEvent.KEYCODE_DPAD_UP:
-                // Up at the top of a page that's scrolled to the top brings down the bar.
-                if (down && e.getRepeatCount() == 0 && cursor.pointerY() <= 1 && web.getScrollY() == 0) {
-                    showBar();
-                    return true;
-                }
-                cursor.press(CursorView.UP, down);
-                return true;
+            case KeyEvent.KEYCODE_DPAD_UP: cursor.press(CursorView.UP, down); return true;
             case KeyEvent.KEYCODE_DPAD_DOWN: cursor.press(CursorView.DOWN, down); return true;
             case KeyEvent.KEYCODE_DPAD_LEFT: cursor.press(CursorView.LEFT, down); return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT: cursor.press(CursorView.RIGHT, down); return true;
@@ -479,7 +507,12 @@ public class BrowserActivity extends Activity {
                 else if (!down) touch(MotionEvent.ACTION_UP);
                 return true;
             case KeyEvent.KEYCODE_BACK:
-                if (!down) { if (web.canGoBack()) web.goBack(); else showBar(); }
+                if (down) return true;
+                if (web.canGoBack()) { web.goBack(); return true; }
+                // On the first page, Back twice closes the browser.
+                long now = SystemClock.uptimeMillis();
+                if (now - backAt < 2000) finish();
+                else { backAt = now; toast("Press Back again to close"); }
                 return true;
             case KeyEvent.KEYCODE_PAGE_UP:
             case KeyEvent.KEYCODE_CHANNEL_UP:
@@ -508,7 +541,7 @@ public class BrowserActivity extends Activity {
 
         bar.addView(button(R.drawable.ic_back, "Back", v -> { if (web.canGoBack()) web.goBack(); }));
         bar.addView(button(R.drawable.ic_forward, "Forward", v -> { if (web.canGoForward()) web.goForward(); }));
-        bar.addView(button(R.drawable.ic_reload, "Reload", v -> { web.reload(); hideBar(); }));
+        bar.addView(button(R.drawable.ic_reload, "Reload", v -> web.reload()));
 
         address = new EditText(this);
         address.setSingleLine(true);
@@ -571,28 +604,22 @@ public class BrowserActivity extends Activity {
         settingsBtn = button(R.drawable.ic_settings, "Settings", v -> showPanel());
         bar.addView(settingsBtn);
         paintShield();
-        bar.setVisibility(View.GONE);
         return bar;
     }
 
-    private void showBar() {
-        if (barShown) return;
-        barShown = true;
-        bar.setVisibility(View.VISIBLE);
-        bar.setAlpha(0f);
-        bar.setTranslationY(-dp(16));
-        bar.animate().alpha(1f).translationY(0).setDuration(200).start();
+    /** Menu: the D-pad moves between the bar's buttons, starting at the address, until Down or Back. */
+    private void enterBar() {
+        inBar = true;
         address.setText(shown(web.getUrl()));
         address.requestFocus();
     }
 
-    private void hideBar() {
-        if (!barShown) return;
-        barShown = false;
+    /** Back to the pointer. */
+    private void exitBar() {
+        inBar = false;
         InputMethodManager imm = getSystemService(InputMethodManager.class);
         if (imm != null) imm.hideSoftInputFromWindow(address.getWindowToken(), 0);
-        bar.animate().alpha(0f).translationY(-dp(16)).setDuration(160)
-                .withEndAction(() -> { if (!barShown) bar.setVisibility(View.GONE); }).start();
+        if (address.hasFocus()) address.setText(shown(web.getUrl()));
         web.requestFocus();
         cursor.wake();
     }
@@ -656,7 +683,7 @@ public class BrowserActivity extends Activity {
     private void hidePanel() {
         panel.setVisibility(View.GONE);
         panelScroll.setVisibility(View.GONE);
-        settingsBtn.requestFocus();
+        if (inBar) settingsBtn.requestFocus(); else web.requestFocus();
     }
 
     /** Rebuilds the rows in place, keeping focus on the same row. */
