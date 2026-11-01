@@ -54,8 +54,7 @@ final class Home extends FrameLayout {
     private final ImageView photo;
     private final View shade;
     private final ImageView weatherIcon;
-    private final TextView temp, condition, date, time;
-    private final View weatherBlock, weatherRule;
+    private final TextView clock, weather, date;
     private final EditText search;
     private final LinearLayout shortcuts;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -74,35 +73,23 @@ final class Home extends FrameLayout {
         shade = new View(c);
         addView(shade, new LayoutParams(-1, -1));
 
-        // Weather and time, top right.
-        LinearLayout widget = new LinearLayout(c);
-        widget.setGravity(Gravity.CENTER_VERTICAL);
-        widget.setPadding(dp(12), dp(8), dp(14), dp(8));
-        widget.setBackground(Ui.glass(c, 14, Ui.HOME_GLASS));
+        // The time, then the weather and date under it, top right: set like the clock on Home.
+        LinearLayout right = column(c);
+        right.setGravity(Gravity.END);
+        clock = Ui.onPhoto(Ui.text(c, 40, 700, Ui.TEXT));
+        clock.setLetterSpacing(0.02f);
+        right.addView(clock, lp(-2, -2, 0, 0, 0));
+        LinearLayout line = new LinearLayout(c);
+        line.setGravity(Gravity.CENTER_VERTICAL);
         weatherIcon = new ImageView(c);
-        weatherIcon.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.TEXT));
-        LinearLayout w = new LinearLayout(c);
-        w.setGravity(Gravity.CENTER_VERTICAL);
-        w.addView(weatherIcon, lp(dp(20), dp(20), 0, dp(8)));
-        LinearLayout wt = column(c);
-        temp = Ui.onPhoto(Ui.text(c, 13, 650, Ui.TEXT));
-        condition = Ui.onPhoto(Ui.text(c, 9, 500, Ui.TEXT_2));
-        // Explicitly as wide as their own text: a vertical row would stretch them to its width.
-        wt.addView(temp, lp(-2, -2, 0, 0, 0));
-        wt.addView(condition, lp(-2, -2, dp(2), 0, 0));
-        w.addView(wt);
-        weatherBlock = w;
-        widget.addView(w);
-        weatherRule = new View(c);
-        weatherRule.setBackgroundColor(0x40FFFFFF);
-        widget.addView(weatherRule, lp(Math.max(1, dp(0.75f)), dp(22), 0, dp(12), dp(12)));
-        LinearLayout dt = column(c);
-        date = Ui.onPhoto(Ui.text(c, 10, 600, Ui.TEXT));
-        time = Ui.onPhoto(Ui.text(c, 10, 500, Ui.TEXT_2));
-        dt.addView(date, lp(-2, -2, 0, 0, 0));
-        dt.addView(time, lp(-2, -2, dp(3), 0, 0));
-        widget.addView(dt);
-        addView(widget, frame(-2, -2, Gravity.TOP | Gravity.END, 0, pageTop + dp(4), dp(24), 0));
+        weatherIcon.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.TEXT_2));
+        line.addView(weatherIcon, lp(dp(15), dp(15), 0, dp(5)));
+        weather = Ui.onPhoto(Ui.text(c, 14, 600, Ui.TEXT_2));
+        line.addView(weather);
+        date = Ui.onPhoto(Ui.text(c, 14, 600, Ui.TEXT));
+        line.addView(date);
+        right.addView(line, lp(-2, -2, -dp(3), 0, 0));
+        addView(right, frame(-2, -2, Gravity.TOP | Gravity.END, 0, pageTop + dp(6), dp(44), 0));
 
         // The mark, the name, the search box and the shortcuts, in the middle.
         LinearLayout middle = column(c);
@@ -111,13 +98,13 @@ final class Home extends FrameLayout {
         brand.setGravity(Gravity.CENTER_VERTICAL);
         ImageView mark = new ImageView(c);
         mark.setImageResource(R.drawable.mark);
-        brand.addView(mark, lp(dp(54), dp(54), 0, 0));
-        TextView name = Ui.onPhoto(Ui.text(c, 42, 700, Ui.TEXT));
+        brand.addView(mark, lp(dp(32), dp(32), 0, 0));
+        TextView name = Ui.onPhoto(Ui.text(c, 26, 700, Ui.TEXT));
         name.setText(new android.text.SpannableStringBuilder("Beesh").append("TV",
                 new android.text.style.ForegroundColorSpan(0xFFFFC21A), 0));
         name.setLetterSpacing(-0.01f);
-        brand.addView(name, lp(-2, -2, 0, dp(16), 0));
-        middle.addView(brand);
+        brand.addView(name, lp(-2, -2, 0, dp(10), 0));
+        middle.addView(brand, lp(-2, -2, 0, 0, 0));
 
         LinearLayout box = new LinearLayout(c);
         box.setGravity(Gravity.CENTER_VERTICAL);
@@ -149,23 +136,12 @@ final class Home extends FrameLayout {
         arrow.setBackground(ab);
         arrow.setOnClickListener(v -> go());
         box.addView(arrow, lp(dp(38), dp(38), 0, 0));
-        middle.addView(box, lp(dp(540), dp(50), dp(26), 0, 0));
+        middle.addView(box, lp(dp(540), dp(50), dp(22), 0, 0));
 
         shortcuts = new LinearLayout(c);
         shortcuts.setGravity(Gravity.CENTER_HORIZONTAL);
         middle.addView(shortcuts, lp(-2, -2, dp(26), 0, 0));
-        addView(middle, frame(-2, -2, Gravity.CENTER, 0, pageTop / 2, 0, 0));
-
-        // A small note, bottom left.
-        TextView note = Ui.onPhoto(Ui.text(c, 11, 500, Ui.TEXT_2));
-        note.setText("Made for the couch.");
-        note.setTypeface(Ui.face(c, 500), android.graphics.Typeface.ITALIC);
-        note.setCompoundDrawablesRelative(Ui.icon(c, R.drawable.ic_sparkle, Ui.TEXT_2, 14), null, null, null);
-        note.setCompoundDrawablePadding(dp(7));
-        note.setGravity(Gravity.CENTER_VERTICAL);
-        note.setPadding(dp(12), dp(8), dp(15), dp(8));
-        note.setBackground(Ui.glass(c, 16, Ui.HOME_GLASS));
-        addView(note, frame(-2, -2, Gravity.BOTTOM | Gravity.START, dp(24), 0, 0, dp(20)));
+        addView(middle, frame(-2, -2, Gravity.CENTER, 0, 0, 0, 0));
 
         fillShortcuts();
         setFocusable(true);
@@ -176,13 +152,9 @@ final class Home extends FrameLayout {
     void refresh() {
         tick.run();
         Backdrop.Weather wx = Backdrop.weather(getContext());
-        weatherBlock.setVisibility(wx == null ? GONE : VISIBLE);
-        weatherRule.setVisibility(wx == null ? GONE : VISIBLE);
-        if (wx != null) {
-            weatherIcon.setImageResource(Backdrop.icon(wx.code, wx.day));
-            temp.setText(wx.temp + "°");
-            condition.setText(wx.label);
-        }
+        weatherIcon.setVisibility(wx == null ? GONE : VISIBLE);
+        if (wx != null) weatherIcon.setImageResource(Backdrop.icon(wx.code, wx.day));
+        weather.setText(wx == null ? "" : wx.temp + "°  ·  ");
         loadPhoto();
     }
 
@@ -206,9 +178,17 @@ final class Home extends FrameLayout {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             Date now = new Date();
-            date.setText(new SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(now));
             boolean is24 = android.text.format.DateFormat.is24HourFormat(getContext());
-            time.setText(new SimpleDateFormat(is24 ? "H:mm" : "h:mm a", Locale.getDefault()).format(now));
+            android.text.SpannableStringBuilder t = new android.text.SpannableStringBuilder(
+                    new SimpleDateFormat(is24 ? "H:mm" : "h:mm", Locale.getDefault()).format(now));
+            if (!is24) {
+                int at = t.length();
+                t.append(" ").append(new SimpleDateFormat("a", Locale.ENGLISH).format(now).toLowerCase(Locale.ROOT));
+                t.setSpan(new android.text.style.RelativeSizeSpan(0.45f), at, t.length(), 0);
+                t.setSpan(new android.text.style.ForegroundColorSpan(Ui.TEXT_2), at, t.length(), 0);
+            }
+            clock.setText(t);
+            date.setText(new SimpleDateFormat("d MMM, EEE", Locale.getDefault()).format(now));
             removeCallbacks(this);
             postDelayed(this, 60_000 - now.getTime() % 60_000);
         }

@@ -28,7 +28,6 @@
         android:banner="@drawable/banner"
         android:allowBackup="false"
         android:hardwareAccelerated="true"
-        android:largeHeap="true"
         android:theme="@style/Browser">
 
         <activity

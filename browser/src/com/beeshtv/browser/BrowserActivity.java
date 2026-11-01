@@ -200,6 +200,8 @@ public class BrowserActivity extends Activity {
         WebView w = new WebView(this);
         w.setBackgroundColor(0xFF0B0B0D);
         w.setFocusable(true);
+        w.setVerticalScrollBarEnabled(false);
+        w.setHorizontalScrollBarEnabled(false);
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -207,7 +209,8 @@ public class BrowserActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
-        s.setBuiltInZoomControls(true);
+        // No pinch zoom on a TV; zoom is per site, from the bar.
+        s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         // Pop-ups come to onCreateWindow: blocked, or opened in this tab when they come from a click.
         s.setSupportMultipleWindows(true);
@@ -468,7 +471,11 @@ public class BrowserActivity extends Activity {
         fullscreen = v;
         fullscreenDone = done;
         exitBar();
+        // Only the video on screen: the page, bar and pointer underneath aren't drawn meanwhile.
         cursor.setVisibility(View.GONE);
+        web.setVisibility(View.INVISIBLE);
+        bar.setVisibility(View.GONE);
+        progress.setVisibility(View.GONE);
         root.addView(v, new FrameLayout.LayoutParams(-1, -1));
     }
 
@@ -477,6 +484,11 @@ public class BrowserActivity extends Activity {
         root.removeView(fullscreen);
         fullscreen = null;
         cursor.setVisibility(View.VISIBLE);
+        bar.setVisibility(View.VISIBLE);
+        if (!onHome) {
+            web.setVisibility(View.VISIBLE);
+            progress.setVisibility(View.VISIBLE);
+        }
         if (fullscreenDone != null) fullscreenDone.onCustomViewHidden();
         fullscreenDone = null;
     }
