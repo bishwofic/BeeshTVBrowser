@@ -43,9 +43,12 @@ pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but wo
   instead of a window, and the browser doesn't tell sites it's an app (no X-Requested-With header).
 - **Pop-ups blocked**: a link you click opens in the tab, anything a page tries to open on its own
   doesn't.
-- **Desktop site** per site, or for every site, when the phone version of a site is too cut down.
+- **Desktop site** per site, for the odd site that still needs a Windows browser; every site already
+  opens in its full desktop layout, fitted to the screen.
 - **Zoom** per site, from 50% to 200%, remembered for next time.
-- **Full-screen video** with Back to leave it.
+- **Full-screen video** with Back to leave it. The screen stays on while a video plays, so the TV's
+  screensaver and display timer wait, and with **Lighter pages** on the page behind it drops its blur
+  and looping animations until the video stops.
 - **Opens web links from other apps**: choose BEESH Browser and Always when the TV asks.
 - **Updates itself** from this repo's GitHub releases, like BEESH Launcher.
 - Small: about 500 KB, since the page engine is the TV's own.
@@ -75,7 +78,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 1. On the TV, open **Settings → System → About** and press OK on **Android TV OS build** seven times.
    Go back to **Settings → System → Developer options** and turn on **USB debugging**.
 2. Find the TV's IP address in **Settings → Network & Internet** (select your Wi-Fi network).
-3. Download this repo (or just `dist/BeeshTV-Browser-1.5.apk` and `install.sh`) and run:
+3. Download this repo (or just `dist/BeeshTV-Browser-2.0.apk` and `install.sh`) and run:
 
    ```bash
    ./install.sh 192.168.1.20
@@ -84,7 +87,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 `install.sh` installs the APK, lets it install its own updates, and opens it. To remove it:
 `./install.sh 192.168.1.20 --undo`.
 
-Without a computer, download `BeeshTV-Browser-1.5.apk` from the
+Without a computer, download `BeeshTV-Browser-2.0.apk` from the
 [latest release](https://github.com/bishwofic/BeeshTVBrowser/releases/latest), copy it to the TV (a USB
 stick, LocalSend, or a downloader app) and open it.
 
