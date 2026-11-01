@@ -219,6 +219,7 @@ final class Start extends FrameLayout {
 
     /** Back on this screen: up from a settings page, else to Home. False when already on Home. */
     boolean back() {
+        if (menu != null) { closeMenu(); return true; }
         switch (page) {
             case HOME: return false;
             case SEARCH: case BLOCKING: case SITES: case LOOK: case INPUT: case UPDATES: show(Page.SETTINGS); return true;
@@ -237,7 +238,7 @@ final class Start extends FrameLayout {
 
     void show(Page p) {
         boolean same = page == p;
-        if (!same) open = null;
+        closeMenu();
         page = p;
         fillNav();
         boolean isHome = p == Page.HOME;
@@ -773,27 +774,20 @@ final class Start extends FrameLayout {
         list.addView(r, lp(-1, dp(48), 0, 0, 0, dp(2)));
     }
 
-    /** Which dropdown is open on this page, by its label. */
-    private String open;
+    /** The open dropdown menu, floating over the page, or null. */
+    private FrameLayout menu;
 
     /**
      * A setting with a few choices: the current one in a small box with an arrow, like a dropdown.
-     * Clicking opens the choices underneath, the current one ticked.
+     * Clicking drops a small menu down from that box, the current choice ticked.
      */
     private void choice(String label, String[] options, int current, java.util.function.IntConsumer pick) {
         Context c = getContext();
-        boolean expanded = label.equals(open);
-        LinearLayout group = column(c);
-        if (expanded) {
-            group.setBackground(Ui.frost(c, 12));
-            group.setPadding(0, 0, 0, dp(6));
-        }
         LinearLayout r = new LinearLayout(c);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(dp(12), 0, dp(8), 0);
         r.setBackground(Ui.surface(c, 10, 0));
         r.setClickable(true);
-        r.setOnClickListener(v -> { open = expanded ? null : label; show(page); });
         TextView l = Ui.text(c, 15, 400, Ui.TEXT);
         l.setText(label);
         r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -807,32 +801,64 @@ final class Start extends FrameLayout {
         ImageView arrow = new ImageView(c);
         arrow.setImageResource(R.drawable.ic_expand);
         arrow.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
-        arrow.setRotation(expanded ? 180 : 0);
         box.addView(arrow, lp(dp(16), dp(16), dp(8), 0, 0, 0));
         r.addView(box, lp(-2, dp(32), dp(16), 0, 0, 0));
-        group.addView(r, lp(-1, dp(48), 0, 0, 0, 0));
-        if (expanded) {
-            for (int i = 0; i < options.length; i++) {
-                int index = i;
-                LinearLayout o = new LinearLayout(c);
-                o.setGravity(Gravity.CENTER_VERTICAL);
-                o.setPadding(dp(24), 0, dp(16), 0);
-                o.setBackground(Ui.surface(c, 8, 0));
-                o.setClickable(true);
-                o.setOnClickListener(x -> { open = null; pick.accept(index); show(page); });
-                TextView t = Ui.text(c, 15, 400, i == current ? Ui.TEXT : Ui.TEXT_2);
-                t.setText(options[i]);
-                o.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
-                if (i == current) {
-                    ImageView tick = new ImageView(c);
-                    tick.setImageResource(R.drawable.ic_check);
-                    tick.setImageTintList(ColorStateList.valueOf(Ui.TEXT));
-                    o.addView(tick, lp(dp(18), dp(18), 0, 0, 0, 0));
-                }
-                group.addView(o, lp(-1, dp(44), dp(6), 0, dp(6), 0));
-            }
+        r.setOnClickListener(x -> openMenu(box, options, current, pick));
+        list.addView(r, lp(-1, dp(48), 0, 0, 0, dp(2)));
+    }
+
+    /** The choices in a small panel just under the box (above it when there's no room below). */
+    private void openMenu(View anchor, String[] options, int current, java.util.function.IntConsumer pick) {
+        closeMenu();
+        Context c = getContext();
+        menu = new FrameLayout(c);
+        menu.setClickable(true);
+        menu.setOnClickListener(v -> closeMenu());
+        LinearLayout panel = column(c);
+        panel.setPadding(dp(4), dp(4), dp(4), dp(4));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(12));
+        bg.setColor(Ui.SURFACE);
+        bg.setStroke(Math.max(1, dp(0.75f)), Ui.HAIRLINE);
+        panel.setBackground(bg);
+        panel.setElevation(dp(8));
+        panel.setClickable(true);
+        for (int i = 0; i < options.length; i++) {
+            int index = i;
+            LinearLayout o = new LinearLayout(c);
+            o.setGravity(Gravity.CENTER_VERTICAL);
+            o.setPadding(dp(12), 0, dp(10), 0);
+            o.setBackground(Ui.surface(c, 8, 0));
+            o.setClickable(true);
+            o.setOnClickListener(x -> { closeMenu(); pick.accept(index); show(page); });
+            TextView t = Ui.text(c, 14, i == current ? 500 : 400, i == current ? Ui.TEXT : Ui.TEXT_2);
+            t.setText(options[i]);
+            o.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+            ImageView tick = new ImageView(c);
+            tick.setImageResource(R.drawable.ic_check);
+            tick.setImageTintList(ColorStateList.valueOf(Ui.TEXT));
+            tick.setVisibility(i == current ? VISIBLE : INVISIBLE);
+            o.addView(tick, lp(dp(16), dp(16), dp(12), 0, 0, 0));
+            panel.addView(o, lp(-1, dp(40), 0, 0, 0, 0));
         }
-        list.addView(group, lp(-1, -2, 0, 0, 0, dp(2)));
+        int[] at = new int[2], me = new int[2];
+        anchor.getLocationInWindow(at);
+        getLocationInWindow(me);
+        int w = Math.max(anchor.getWidth(), dp(220)), h = options.length * dp(40) + dp(8);
+        int x = at[0] - me[0] + anchor.getWidth() - w;
+        int below = at[1] - me[1] + anchor.getHeight() + dp(6);
+        int y = below + h <= getHeight() - dp(16) ? below : Math.max(dp(16), at[1] - me[1] - h - dp(6));
+        menu.addView(panel, frame(w, -2, Gravity.TOP | Gravity.START, x, y, 0, 0));
+        addView(menu, new LayoutParams(-1, -1));
+        panel.setAlpha(0f);
+        panel.setTranslationY(-dp(4));
+        panel.animate().alpha(1f).translationY(0).setDuration(140).start();
+    }
+
+    private void closeMenu() {
+        if (menu == null) return;
+        removeView(menu);
+        menu = null;
     }
 
     /** An on/off setting with a switch. */

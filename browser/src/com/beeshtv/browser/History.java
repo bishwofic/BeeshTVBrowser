@@ -66,15 +66,19 @@ final class History {
         for (Entry e : items) {
             String h = hostOf(e.url);
             if (h == null || !seen.add(h)) continue;
-            out.add(new String[]{h, "https://" + Uri.parse(e.url).getHost()});
+            out.add(new String[]{h, "https://" + h});
             if (out.size() == n) break;
         }
         return out;
     }
 
+    /** The site's name without "www." or the "m." of its phone version, so both count as one site. */
     static String hostOf(String url) {
         String h = url == null ? null : Uri.parse(url).getHost();
-        return h == null ? null : h.startsWith("www.") ? h.substring(4) : h;
+        if (h == null) return null;
+        if (h.startsWith("www.")) return h.substring(4);
+        if (h.startsWith("m.") && h.indexOf('.', 2) > 0) return h.substring(2);
+        return h;
     }
 
     private void save() {
