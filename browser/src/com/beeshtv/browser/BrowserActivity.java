@@ -95,6 +95,8 @@ public class BrowserActivity extends Activity {
         int color;
         final AtomicInteger blocked = new AtomicInteger();
         ScriptHandler frameFix;
+        /** Frames of this page with a video playing, and when each last said so (uptime ms). */
+        final java.util.Map<String, Long> playing = new java.util.HashMap<>();
 
         String url() { return web != null && web.getUrl() != null ? web.getUrl() : url; }
         String title() { return web != null && web.getTitle() != null ? web.getTitle() : title; }
@@ -345,6 +347,7 @@ public class BrowserActivity extends Activity {
         web.onResume();
         web.setVisibility(View.VISIBLE);
         refreshBar();
+        stayAwake();
     }
 
     void switchTab(Tab t) {
@@ -417,6 +420,13 @@ public class BrowserActivity extends Activity {
         InputBridge(Tab t) { tab = t; }
         @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
         @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
+        /** A frame's video started or stopped playing; frames that are playing repeat it now and then. */
+        @JavascriptInterface public void playing(String frame, boolean on) {
+            main.post(() -> {
+                if (on) tab.playing.put(frame, SystemClock.uptimeMillis()); else tab.playing.remove(frame);
+                stayAwake();
+            });
+        }
         /** Asked by pages as they start: hide ad boxes (and on YouTube, its in-video ads)? */
         @JavascriptInterface public boolean adsOn(String host) {
             String h = host == null ? null : History.hostOf("https://" + host);
@@ -506,6 +516,8 @@ public class BrowserActivity extends Activity {
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 t.host = hostOf(url);
                 t.blocked.set(0);
+                t.playing.clear();
+                if (t == tab) stayAwake();
                 if (t == tab) hideTip();
                 if (t == tab) refreshBar();
             }
@@ -987,6 +999,7 @@ public class BrowserActivity extends Activity {
         bar.setVisibility(View.GONE);
         progress.setVisibility(View.GONE);
         root.addView(v, root.indexOfChild(cursor), new FrameLayout.LayoutParams(-1, -1));
+        stayAwake();
     }
 
     private void exitFullscreen() {
@@ -999,7 +1012,29 @@ public class BrowserActivity extends Activity {
         progress.setVisibility(View.VISIBLE);
         if (fullscreenDone != null) fullscreenDone.onCustomViewHidden();
         fullscreenDone = null;
+        stayAwake();
     }
+
+    /** How long a frame's word that it's playing lasts: it repeats it every 15 seconds while it is. */
+    private static final long PLAYING_FOR_MS = 40_000;
+
+    /**
+     * The screen stays on while a video plays on the page shown, or one is full screen, as it does in the
+     * TV's own video apps: no screensaver, and the TV's "turn off after inactivity" doesn't count the
+     * time. Once nothing plays, the TV's usual timers apply again.
+     */
+    private void stayAwake() {
+        main.removeCallbacks(recheckAwake);
+        long now = SystemClock.uptimeMillis();
+        tab.playing.values().removeIf(at -> now - at > PLAYING_FOR_MS);
+        boolean on = fullscreen != null || !tab.playing.isEmpty();
+        if (on) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // A frame that goes away mid-video never says it stopped; its word runs out instead.
+        if (!tab.playing.isEmpty()) main.postDelayed(recheckAwake, PLAYING_FOR_MS / 2);
+    }
+
+    private final Runnable recheckAwake = this::stayAwake;
 
     // ---------------------------------------------------------------- the pointer
 

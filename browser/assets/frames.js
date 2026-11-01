@@ -6,6 +6,10 @@
 (function () {
   if (window.__beeshtv) return;
   window.__beeshtv = true;
+  // XML files (feeds, sitemaps, error replies) are shown as a tree of their own elements, which
+  // anything added here would appear in. Web pages, XHTML and videos opened on their own still run.
+  var type = document.contentType || '';
+  if (/xml/.test(type) && !/xhtml/.test(type)) return;
 
   // 1. Never sandbox a frame: drop the attribute however it's set, before the frame loads.
   var setAttr = Element.prototype.setAttribute;
@@ -72,6 +76,28 @@
     if (document.documentElement) addRing(); else document.addEventListener('DOMContentLoaded', addRing);
   }
 
+  // 3b. A video playing (in any frame) keeps the TV's screen on; see BrowserActivity.stayAwake. Each
+  //     frame speaks for itself, and repeats it while it plays in case it's removed without a word.
+  if (window.BeeshTVInput && BeeshTVInput.playing) {
+    var frameId = Math.random().toString(36).slice(2);
+    var videoPlaying = function () {
+      var vs = document.getElementsByTagName('video');
+      for (var i = 0; i < vs.length; i++) if (!vs[i].paused && !vs[i].ended) return true;
+      return false;
+    };
+    var said = false;
+    var tell = function () {
+      var now = videoPlaying();
+      if (now || said) BeeshTVInput.playing(frameId, now);
+      said = now;
+    };
+    ['playing', 'pause', 'ended', 'emptied'].forEach(function (ev) {
+      document.addEventListener(ev, function () { setTimeout(tell, 50); }, true);
+    });
+    setInterval(function () { if (said) tell(); }, 15000);
+    window.addEventListener('pagehide', function () { if (said) BeeshTVInput.playing(frameId, false); });
+  }
+
   // 4. Blocked hosts fail the way they do with any ad blocker: the browser decides (adblock lists,
   //    DNS protection, and sites where ads are allowed). Requests the page makes from script would
   //    otherwise "succeed" with the browser's empty answer.
@@ -110,7 +136,8 @@
 
   // 5. Lighter pages (BrowserActivity sets __beeshtvLight): a TV draws every page effect itself, every
   //    frame. Backdrop blur, the costliest, is switched off; and while a video plays, the page's looping
-  //    decorations (spinners, carousels, pulses) are paused, and resume when it stops.
+  //    decorations (spinners, carousels, pulses) are paused and its blurred pictures drawn sharp, so
+  //    every frame goes to the video. Both come back when it stops.
   if (window.__beeshtvLight) {
     var css = '*,*::before,*::after{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}';
     var addStyle = function () {
@@ -125,23 +152,51 @@
       for (var i = 0; i < vs.length; i++) if (!vs[i].paused && !vs[i].ended) return true;
       return false;
     };
+    // Blur filters on the page (not the video's): taken out, keeping any other filter, and put back.
+    var unblurred = [], lastLook = 0;
+    var unblur = function () {
+      var all = document.body ? document.body.getElementsByTagName('*') : [];
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (el.tagName === 'VIDEO' || el.__beeshtvFilter !== undefined) continue;
+        var f = getComputedStyle(el).filter;
+        if (!f || f.indexOf('blur(') < 0) continue;
+        el.__beeshtvFilter = el.style.getPropertyValue('filter');
+        el.__beeshtvPriority = el.style.getPropertyPriority('filter');
+        el.style.setProperty('filter', f.replace(/blur\([^)]*\)/g, '').trim() || 'none', 'important');
+        unblurred.push(el);
+      }
+    };
+    var reblur = function () {
+      unblurred.forEach(function (el) {
+        el.style.setProperty('filter', el.__beeshtvFilter, el.__beeshtvPriority);
+        delete el.__beeshtvFilter;
+        delete el.__beeshtvPriority;
+      });
+      unblurred = [];
+    };
     var settle = function () {
-      if (!document.getAnimations) return;
       if (anyPlaying()) {
-        document.getAnimations().forEach(function (an) {
-          var t = an.effect && an.effect.getTiming && an.effect.getTiming();
-          if (t && t.iterations === Infinity && an.playState === 'running') { an.pause(); paused.push(an); }
-        });
+        if (document.getAnimations) {
+          document.getAnimations().forEach(function (an) {
+            var t = an.effect && an.effect.getTiming && an.effect.getTiming();
+            if (t && t.iterations === Infinity && an.playState === 'running') { an.pause(); paused.push(an); }
+          });
+        }
+        // Looking at every element costs a moment, so it's done as the video starts and then rarely.
+        if (Date.now() - lastLook > 15000) { lastLook = Date.now(); unblur(); }
       } else {
         paused.forEach(function (an) { try { an.play(); } catch (e) {} });
         paused = [];
+        reblur();
+        lastLook = 0;
       }
     };
     ['playing', 'pause', 'ended'].forEach(function (ev) {
       document.addEventListener(ev, function () { setTimeout(settle, 50); }, true);
     });
     // Decorations added later while the video plays are caught too.
-    setInterval(function () { if (paused.length || anyPlaying()) settle(); }, 3000);
+    setInterval(function () { if (paused.length || unblurred.length || anyPlaying()) settle(); }, 3000);
   }
 
   // 6. Every site in its full desktop layout, fitted to the screen at 100%: the TV is only 960 points
