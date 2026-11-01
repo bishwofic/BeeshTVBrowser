@@ -59,17 +59,38 @@ final class History {
         save();
     }
 
-    /** Sites, newest first, one each: the address of the last page you saw on it. */
+    /** Sites, newest first, one each (en.wikipedia.org and wikipedia.org are one site). */
     List<String[]> recentSites(int n) {
         Set<String> seen = new LinkedHashSet<>();
         List<String[]> out = new ArrayList<>();
         for (Entry e : items) {
             String h = hostOf(e.url);
-            if (h == null || !seen.add(h)) continue;
+            if (h == null || !seen.add(domainOf(h))) continue;
             out.add(new String[]{h, "https://" + h});
             if (out.size() == n) break;
         }
         return out;
+    }
+
+    /** Second-level labels under which country domains put their sites (bbc.co.uk, abc.net.au). */
+    private static final java.util.Set<String> SECOND = new java.util.HashSet<>(java.util.Arrays.asList(
+            "co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"));
+
+    /** The domain a site is registered under: en.wikipedia.org gives wikipedia.org, bbc.co.uk stays. */
+    static String domainOf(String host) {
+        String[] p = host.split("\\.");
+        if (p.length <= 2) return host;
+        int keep = p.length >= 3 && SECOND.contains(p[p.length - 2]) && p[p.length - 1].length() == 2 ? 3 : 2;
+        StringBuilder d = new StringBuilder();
+        for (int i = p.length - keep; i < p.length; i++) d.append(i == p.length - keep ? "" : ".").append(p[i]);
+        return d.toString();
+    }
+
+    /** A short name for a site: Wikipedia for en.wikipedia.org, BBC-style names stay as written. */
+    static String nameOf(String host) {
+        String d = domainOf(host);
+        String n = d.contains(".") ? d.substring(0, d.indexOf('.')) : d;
+        return n.isEmpty() ? host : Character.toUpperCase(n.charAt(0)) + n.substring(1);
     }
 
     /** The site's name without "www." or the "m." of its phone version, so both count as one site. */

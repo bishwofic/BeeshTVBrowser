@@ -19,12 +19,17 @@ import java.util.concurrent.Executors;
 
 /**
  * Blocks requests to known ad and tracker hosts. It starts from a short list bundled with the app and,
- * once a week, swaps in Steven Black's unified hosts list (ads and malware, about 80,000 hosts). A
- * host is blocked when it or any parent domain is listed, so "ads.example.com" is caught by
- * "example.com" only if that is listed itself.
+ * once a week, swaps in two public lists merged: Steven Black's unified hosts (ads and malware) and
+ * AdGuard's DNS filter (ads, trackers, analytics), together well over 100,000 hosts. A host is
+ * blocked when it or any parent domain is listed.
  */
 final class AdBlock {
-    static final String LIST_URL = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts";
+    static final String[] LISTS = {
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+            "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+    };
+    /** Raised when the lists change, so TVs fetch the new set at once instead of within a week. */
+    static final int LISTS_VERSION = 2;
     static final long REFRESH_MS = 7L * 24 * 60 * 60 * 1000;
 
     private final Context app;
@@ -61,27 +66,33 @@ final class AdBlock {
 
     /** Fetches a fresh list once a week (or now, when forced), then switches to it. */
     void refreshIfDue(boolean force, Runnable done) {
-        if (fetching || !force && System.currentTimeMillis() - updatedAt() < REFRESH_MS) return;
+        boolean stale = sp.getInt("adblock_lists", 1) != LISTS_VERSION;
+        if (fetching || !force && !stale && System.currentTimeMillis() - updatedAt() < REFRESH_MS) return;
         fetching = true;
         io.execute(() -> {
             File part = new File(app.getFilesDir(), "hosts.part");
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(LIST_URL).openConnection();
-                c.setConnectTimeout(15000);
-                c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "BeeshTV-Browser");
-                try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(part)) {
-                    byte[] buf = new byte[64 * 1024];
-                    for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
-                } finally {
-                    c.disconnect();
+                try (OutputStream out = new FileOutputStream(part)) {
+                    for (String list : LISTS) {
+                        HttpURLConnection c = (HttpURLConnection) new URL(list).openConnection();
+                        c.setConnectTimeout(15000);
+                        c.setReadTimeout(30000);
+                        c.setRequestProperty("User-Agent", "BeeshTV-Browser");
+                        try (InputStream in = c.getInputStream()) {
+                            byte[] buf = new byte[64 * 1024];
+                            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                            out.write('\n');
+                        } finally {
+                            c.disconnect();
+                        }
+                    }
                 }
                 Set<String> fresh = parse(new java.io.FileInputStream(part));
                 // A list this short is an error page, not a hosts file.
                 if (fresh.size() < 1000) throw new IllegalStateException("short list");
                 if (!part.renameTo(cache())) throw new IllegalStateException("rename");
                 hosts = fresh;
-                sp.edit().putLong("adblock_at", System.currentTimeMillis()).apply();
+                sp.edit().putLong("adblock_at", System.currentTimeMillis()).putInt("adblock_lists", LISTS_VERSION).apply();
             } catch (Exception e) {
                 part.delete();
             } finally {
@@ -100,7 +111,11 @@ final class AdBlock {
         } catch (Exception ignored) { }
     }
 
-    /** Hosts-file lines ("0.0.0.0 ads.example.com") or plain domains; # starts a comment. */
+    /**
+     * Hosts-file lines ("0.0.0.0 ads.example.com"), plain domains, and the domain rules of AdGuard's
+     * filter ("||ads.example.com^"); # and ! start comments, exceptions (@@) and anything with
+     * wildcards or options are skipped.
+     */
     private static Set<String> parse(InputStream in) throws java.io.IOException {
         Set<String> out = new HashSet<>(100_000);
         try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
@@ -108,7 +123,11 @@ final class AdBlock {
                 int hash = line.indexOf('#');
                 if (hash >= 0) line = line.substring(0, hash);
                 line = line.trim();
-                if (line.isEmpty()) continue;
+                if (line.isEmpty() || line.startsWith("!") || line.startsWith("@@")) continue;
+                if (line.startsWith("||")) {
+                    if (!line.endsWith("^") || line.indexOf('*') >= 0 || line.indexOf('$') >= 0) continue;
+                    line = line.substring(2, line.length() - 1);
+                }
                 String[] parts = line.split("\\s+");
                 String host = parts.length > 1 ? parts[1] : parts[0];
                 if (host.equals("localhost") || host.endsWith(".localdomain") || host.equals("0.0.0.0")

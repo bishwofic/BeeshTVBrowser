@@ -59,6 +59,22 @@ final class Ui {
         return light ? android.R.style.Theme_DeviceDefault_Light_Dialog_Alert : android.R.style.Theme_DeviceDefault_Dialog_Alert;
     }
 
+    /** A colour at a given opacity (0 to 1). */
+    static int alpha(int c, float a) { return (Math.round(a * 255) << 24) | (c & 0xFFFFFF); }
+
+    /** Perceived brightness, 0 (black) to 1 (white). */
+    static float luminance(int c) {
+        return (0.299f * ((c >> 16) & 255) + 0.587f * ((c >> 8) & 255) + 0.114f * (c & 255)) / 255f;
+    }
+
+    /** a moved toward b by t. */
+    static int mix(int a, int b, float t) {
+        int r = Math.round(((a >> 16) & 255) + (((b >> 16) & 255) - ((a >> 16) & 255)) * t);
+        int g = Math.round(((a >> 8) & 255) + (((b >> 8) & 255) - ((a >> 8) & 255)) * t);
+        int bl = Math.round((a & 255) + ((b & 255) - (a & 255)) * t);
+        return 0xFF000000 | r << 16 | g << 8 | bl;
+    }
+
     /** "#rrggbb" of a colour, for the pages the browser writes itself. */
     static String css(int c) { return String.format("#%06x", c & 0xFFFFFF); }
 
@@ -123,12 +139,17 @@ final class Ui {
      * Pass a resting fill for things that need a shape even at rest, like a field.
      */
     static StateListDrawable surface(Context c, float radiusDp, int rest) {
+        return surface(c, radiusDp, rest, HOVER, SELECTED);
+    }
+
+    /** The same, with its own hover and selected fills (for the bar, which takes the website's colour). */
+    static StateListDrawable surface(Context c, float radiusDp, int rest, int hover, int selected) {
         StateListDrawable s = new StateListDrawable();
-        s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, HOVER));
-        s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, HOVER));
-        s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, HOVER));
-        s.addState(new int[]{android.R.attr.state_activated}, fill(c, radiusDp, HOVER));
-        s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, SELECTED));
+        s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, hover));
+        s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, hover));
+        s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, hover));
+        s.addState(new int[]{android.R.attr.state_activated}, fill(c, radiusDp, hover));
+        s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, selected));
         s.addState(new int[]{}, fill(c, radiusDp, rest));
         s.setEnterFadeDuration(90);
         s.setExitFadeDuration(120);

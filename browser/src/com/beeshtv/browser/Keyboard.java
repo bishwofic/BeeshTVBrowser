@@ -16,9 +16,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * BeeshTV's own on-screen keyboard, in place of the TV's. Arrows move between keys, OK types, Back
- * closes it; the pointer and a mouse can click keys too. Letters and a page of symbols, with keys
- * for web addresses (.com, /, @).
+ * BeeshTV's own on-screen keyboard, in place of the TV's: a slim panel docked to the bottom edge that
+ * slides up when a field wants typing. Arrows move between keys, OK types, Back closes it; the pointer
+ * and a mouse can click keys too. Letters and a page of symbols, with keys for web addresses.
  */
 final class Keyboard extends FrameLayout {
     /** Where the typing goes: one of our fields, or a field on a web page. */
@@ -38,20 +38,20 @@ final class Keyboard extends FrameLayout {
             {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
             {"a", "s", "d", "f", "g", "h", "j", "k", "l", BACK},
             {SHIFT, "z", "x", "c", "v", "b", "n", "m", ".", "-"},
-            {SYMBOLS, ".com", "/", SPACE, "@", GO},
+            {SYMBOLS, ".com", "/", SPACE, "@", HIDE, GO},
     };
     private static final String[][] SYMBOL_ROWS = {
             {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
             {"!", "@", "#", "$", "%", "&", "*", "(", ")", "?"},
             {"-", "_", "=", "+", ":", ";", "'", "\"", ",", BACK},
             {"~", "`", "|", "\\", "<", ">", "[", "]", "{", "}"},
-            {LETTERS, ".com", "/", SPACE, ".", GO},
+            {LETTERS, ".com", "/", SPACE, ".", HIDE, GO},
     };
     /** Width of a key in units, ten units to a row. */
     private static float units(String k) {
         switch (k) {
-            case SPACE: return 3f;
-            case GO: return 2f;
+            case SPACE: return 2.5f;
+            case GO: return 1.5f;
             case SYMBOLS: case LETTERS: case ".com": return 1.5f;
             default: return 1f;
         }
@@ -69,30 +69,26 @@ final class Keyboard extends FrameLayout {
         setClickable(true);
         LinearLayout panel = new LinearLayout(c);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(12), dp(12), dp(12), dp(12));
+        panel.setGravity(Gravity.CENTER_HORIZONTAL);
+        panel.setPadding(dp(16), dp(10), dp(16), dp(14));
         GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(18));
+        float r = dp(20);
+        bg.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
         bg.setColor(Ui.SURFACE);
         panel.setBackground(bg);
-        panel.setElevation(dp(12));
+        panel.setElevation(dp(10));
         panel.setClickable(true);
-        // A small handle row: what you're typing into, and a button to put the keyboard away.
-        LinearLayout top = new LinearLayout(c);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView hint = Ui.text(c, 13, 500, Ui.TEXT_3);
-        hint.setText("Arrows to move · OK to type · Back to close");
-        top.addView(hint, new LinearLayout.LayoutParams(0, -2, 1f));
-        ImageView hide = new ImageView(c);
-        hide.setImageResource(R.drawable.ic_keyboard_hide);
-        hide.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
-        hide.setPadding(dp(8), dp(6), dp(8), dp(6));
-        hide.setBackground(Ui.surface(c, 8, 0));
-        hide.setOnClickListener(v -> close());
-        top.addView(hide, new LinearLayout.LayoutParams(dp(40), dp(32)));
-        panel.addView(top, lp(-1, -2, dp(4), 0, dp(4), dp(8)));
+        // A short handle, like a sheet's.
+        View grip = new View(c);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(2));
+        g.setColor(Ui.HOVER);
+        grip.setBackground(g);
+        panel.addView(grip, lp(dp(32), dp(4), 0, 0, 0, dp(10)));
         rows = new LinearLayout(c);
         rows.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(rows);
+        panel.addView(rows, new LinearLayout.LayoutParams(Math.min(dp(560),
+                c.getResources().getDisplayMetrics().widthPixels - dp(32)), -2));
         addView(panel, new LayoutParams(-1, -2, Gravity.BOTTOM));
         build();
     }
@@ -104,19 +100,32 @@ final class Keyboard extends FrameLayout {
         target = t;
         shift = false;
         build();
-        if (!open()) {
+        if (!open() || closing) {
+            closing = false;
             setVisibility(VISIBLE);
-            setAlpha(0f);
-            setTranslationY(dp(24));
-            animate().alpha(1f).translationY(0).setDuration(180).start();
+            animate().cancel();
+            // Slides up from the bottom edge.
+            post(() -> {
+                setTranslationY(getHeight() == 0 ? dp(260) : getHeight());
+                animate().translationY(0).setDuration(240).setInterpolator(EASE).start();
+            });
         }
     }
 
+    private static final android.view.animation.Interpolator EASE =
+            new android.view.animation.PathInterpolator(0.2f, 0.9f, 0.25f, 1f);
+    private boolean closing;
+
+    boolean isOpen() { return open() && !closing; }
+
     void close() {
-        if (!open()) return;
-        setVisibility(GONE);
+        if (!open() || closing) return;
+        closing = true;
         Target t = target;
         target = null;
+        animate().cancel();
+        animate().translationY(getHeight()).setDuration(180).setInterpolator(EASE)
+                .withEndAction(() -> { if (closing) { setVisibility(GONE); closing = false; } }).start();
         if (t != null) t.closed();
     }
 
@@ -150,12 +159,13 @@ final class Keyboard extends FrameLayout {
             List<View> inRow = new ArrayList<>();
             for (String k : r) {
                 View v = keyView(k);
-                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), units(k));
-                p.setMargins(dp(3), dp(3), dp(3), dp(3));
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(32), units(k));
+                p.setMargins(dp(2), dp(2), dp(2), dp(2));
                 line.addView(v, p);
                 inRow.add(v);
             }
             line.setWeightSum(10f);
+            line.setGravity(Gravity.CENTER_HORIZONTAL);
             rows.addView(line, new LinearLayout.LayoutParams(-1, -2));
             keys.add(inRow);
         }
@@ -167,17 +177,18 @@ final class Keyboard extends FrameLayout {
     private View keyView(String k) {
         Context c = getContext();
         boolean special = k.equals(SHIFT) || k.equals(BACK) || k.equals(SYMBOLS) || k.equals(LETTERS)
-                || k.equals(GO) || k.equals(".com");
+                || k.equals(GO) || k.equals(".com") || k.equals(HIDE);
         View v;
-        if (k.equals(SHIFT) || k.equals(BACK)) {
+        if (k.equals(SHIFT) || k.equals(BACK) || k.equals(HIDE)) {
             ImageView i = new ImageView(c);
-            i.setImageResource(k.equals(SHIFT) ? R.drawable.ic_shift : R.drawable.ic_backspace);
+            i.setImageResource(k.equals(SHIFT) ? R.drawable.ic_shift : k.equals(HIDE) ? R.drawable.ic_keyboard_hide
+                    : R.drawable.ic_backspace);
             i.setImageTintList(ColorStateList.valueOf(k.equals(SHIFT) && shift ? Ui.TEXT : Ui.TEXT_2));
             i.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            i.setPadding(0, dp(12), 0, dp(12));
+            i.setPadding(0, dp(8), 0, dp(8));
             v = i;
         } else {
-            TextView t = Ui.text(c, k.length() == 1 ? 18 : 14, k.equals(GO) ? 500 : 400,
+            TextView t = Ui.text(c, k.length() == 1 ? 14 : 12, k.equals(GO) ? 500 : 400,
                     k.equals(GO) ? Ui.BG : special ? Ui.TEXT_2 : Ui.TEXT);
             t.setGravity(Gravity.CENTER);
             t.setText(k.equals(SPACE) ? "space" : shift && k.length() == 1 ? k.toUpperCase(Locale.ROOT) : k);
@@ -188,11 +199,11 @@ final class Keyboard extends FrameLayout {
             goKey = v;
             // The one filled key: the text colour, like the primary button.
             GradientDrawable g = new GradientDrawable();
-            g.setCornerRadius(dp(10));
+            g.setCornerRadius(dp(8));
             g.setColor(Ui.TEXT);
             v.setBackground(g);
         } else {
-            v.setBackground(Ui.surface(c, 10, special ? Ui.FROST : Ui.SELECTED));
+            v.setBackground(Ui.surface(c, 8, special ? Ui.FROST : Ui.SELECTED));
         }
         v.setClickable(true);
         v.setOnClickListener(x -> press(k));
@@ -206,6 +217,7 @@ final class Keyboard extends FrameLayout {
             case SYMBOLS: symbols = true; build(); return;
             case LETTERS: symbols = false; build(); return;
             case BACK: target.backspace(); return;
+            case HIDE: close(); return;
             case GO: target.enter(); return;
             default:
                 target.type(shift && k.length() == 1 ? k.toUpperCase(Locale.ROOT) : k);

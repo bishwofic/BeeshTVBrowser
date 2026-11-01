@@ -51,8 +51,8 @@ final class Start extends FrameLayout {
     enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT }
 
     static final String[] BACKGROUNDS = {"Plain", "Frosted TV photo"};
-    static final String DEFAULT_SHORTCUTS = "YouTube|https://www.youtube.com;Google|https://www.google.com;"
-            + "Wikipedia|https://www.wikipedia.org";
+    /** Nothing pinned at first: the row fills with the sites you visit. */
+    static final String DEFAULT_SHORTCUTS = "";
     static final int SITES = 5;
 
     private final BrowserActivity b;
@@ -68,6 +68,10 @@ final class Start extends FrameLayout {
     private final ImageView weatherIcon;
     private final EditText search;
     private final LinearLayout sites;
+    private final View side, time, scrim;
+    private final FrameLayout card;
+    /** Open over a website as a card on the right, instead of the whole screen. */
+    private boolean sheet;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private Page page = Page.HOME;
@@ -86,6 +90,7 @@ final class Start extends FrameLayout {
 
         // Sidebar.
         LinearLayout side = column(c);
+        this.side = side;
         side.setPadding(dp(16), dp(28), dp(16), dp(24));
         side.setBackgroundColor(Ui.light ? 0x0A1C1717 : 0x0DF4F1F0);
         LinearLayout brand = new LinearLayout(c);
@@ -128,6 +133,7 @@ final class Start extends FrameLayout {
 
         // The clock, top right, set like the one on BeeshTV Home: no panel behind it.
         LinearLayout time = column(c);
+        this.time = time;
         time.setGravity(Gravity.END);
         clock = Ui.onPhoto(Ui.text(c, 48, 600, Ui.TEXT));
         clock.setLetterSpacing(0.02f);
@@ -196,8 +202,48 @@ final class Start extends FrameLayout {
         scroll.addView(list, new LayoutParams(-1, -2));
         content.addView(scroll, frame(dp(PAGE), -1, Gravity.START, dp(48), dp(36), 0, 0));
 
+        // Over a website: the page stays in view, dimmed, with the card on the right half.
+        scrim = new View(c);
+        scrim.setBackgroundColor(Ui.light ? 0x33000000 : 0x73000000);
+        scrim.setClickable(true);
+        scrim.setOnClickListener(v -> b.closeSheet());
+        scrim.setVisibility(GONE);
+        addView(scrim, new LayoutParams(-1, -1));
+        card = new FrameLayout(c);
+        GradientDrawable cb = new GradientDrawable();
+        cb.setCornerRadius(dp(20));
+        cb.setColor(Ui.SURFACE);
+        card.setBackground(cb);
+        card.setElevation(dp(16));
+        card.setClickable(true);
+        card.setVisibility(GONE);
+        addView(card, frame(getResources().getDisplayMetrics().widthPixels / 2, -1, Gravity.END, 0, dp(16), dp(16), dp(16)));
+
         setClickable(true);
         show(Page.HOME);
+    }
+
+    boolean isSheet() { return sheet; }
+
+    /** Full screen with the sidebar, or a card over the website (Tabs, History, Settings, Help, About). */
+    void sheet(boolean on) {
+        if (sheet == on) return;
+        sheet = on;
+        setBackground(on ? null : new Ui.Night());
+        for (View v : new View[]{photo, shade, side, content}) v.setVisibility(on ? GONE : VISIBLE);
+        scrim.setVisibility(on ? VISIBLE : GONE);
+        card.setVisibility(on ? VISIBLE : GONE);
+        ((android.view.ViewGroup) scroll.getParent()).removeView(scroll);
+        if (on) {
+            card.addView(scroll, frame(-1, -1, Gravity.START, dp(28), dp(24), dp(28), 0));
+            card.setTranslationX(dp(48));
+            card.setAlpha(0f);
+            card.animate().translationX(0).alpha(1f).setDuration(200).start();
+            scrim.setAlpha(0f);
+            scrim.animate().alpha(1f).setDuration(200).start();
+        } else {
+            content.addView(scroll, frame(dp(PAGE), -1, Gravity.START, dp(48), dp(36), 0, 0));
+        }
     }
 
     /** Six site cards of TILE with 8 between them make the width of the search box. */
@@ -218,11 +264,11 @@ final class Start extends FrameLayout {
     /** Back on this screen: up from a settings page, else to Home. False when already on Home. */
     boolean back() {
         if (menu != null) { closeMenu(); return true; }
-        switch (page) {
-            case HOME: return false;
-            case SEARCH: case BLOCKING: case SITES: case LOOK: case UPDATES: show(Page.SETTINGS); return true;
-            default: show(Page.HOME); return true;
-        }
+        if (isSettings(page)) { show(Page.SETTINGS); return true; }
+        // Over a website, Back closes the card; full screen, it goes to Home first.
+        if (sheet || page == Page.HOME) return false;
+        show(Page.HOME);
+        return true;
     }
 
     void scrollBy(float dy) { if (scroll.getVisibility() == VISIBLE) scroll.scrollBy(0, Math.round(dy)); }
@@ -263,7 +309,8 @@ final class Start extends FrameLayout {
     private void fillNav() {
         nav.removeAllViews();
         navRow(R.drawable.ic_home, "Home", null, Page.HOME);
-        navRow(R.drawable.ic_tabs, "Tabs", String.valueOf(b.tabs().size()), Page.TABS);
+        int open = b.openTabs().size();
+        navRow(R.drawable.ic_tabs, "Tabs", open == 0 ? null : String.valueOf(open), Page.TABS);
         navRow(R.drawable.ic_history, "History", null, Page.HISTORY);
         if (b.updater().state() == Updater.State.READY) {
             View u = navItem(R.drawable.ic_update, "Update to " + b.updater().latest(), null, false);
@@ -372,7 +419,7 @@ final class Start extends FrameLayout {
         sites.removeAllViews();
         List<String[]> pins = pinned();
         List<String> hosts = new ArrayList<>();
-        for (String[] p : pins) hosts.add(History.hostOf(p[1]));
+        for (String[] p : pins) hosts.add(History.domainOf(History.hostOf(p[1])));
         int shown = 0;
         for (String[] p : pins) {
             if (shown == SITES) break;
@@ -382,9 +429,18 @@ final class Start extends FrameLayout {
         }
         for (String[] r : b.history().recentSites(SITES * 2)) {
             if (shown == SITES) break;
-            if (hosts.contains(r[0])) continue;
+            if (hosts.contains(History.domainOf(r[0]))) continue;
             siteTile(nameOf(r[0]), r[1], v -> { pin(nameOf(r[0]), r[1]); return true; });
             shown++;
+        }
+        if (shown == 0) {
+            // Nothing visited yet: say so, and keep a way to add one by hand.
+            TextView none = Ui.text(getContext(), 15, 400, Ui.TEXT_3);
+            none.setText("Sites you visit will show up here");
+            sites.addView(none, new LinearLayout.LayoutParams(0, -2, 1f));
+            sites.setGravity(Gravity.CENTER_VERTICAL);
+            sites.addView(link("Add a site", this::add));
+            return;
         }
         tile("Add site", getContext().getDrawable(R.drawable.ic_plus), v -> add(), null);
     }
@@ -419,10 +475,7 @@ final class Start extends FrameLayout {
         return icon;
     }
 
-    private static String nameOf(String host) {
-        String n = host.contains(".") ? host.substring(0, host.indexOf('.')) : host;
-        return n.isEmpty() ? host : Character.toUpperCase(n.charAt(0)) + n.substring(1);
-    }
+    private static String nameOf(String host) { return History.nameOf(host); }
 
     private void pin(String name, String url) {
         List<String[]> l = pinned();
@@ -447,10 +500,12 @@ final class Start extends FrameLayout {
     // ---- Tabs
 
     private void fillTabs() {
-        title("Tabs", b.tabs().size() + " open");
+        List<BrowserActivity.Tab> open = b.openTabs();
+        title("Tabs", open.isEmpty() ? null : open.size() + " open");
         row(R.drawable.ic_plus, "New tab", null, false, () -> b.newTab());
         gap();
-        for (BrowserActivity.Tab t : b.tabs()) {
+        if (open.isEmpty()) note("Sites you open show up here, so you can switch between them.");
+        for (BrowserActivity.Tab t : open) {
             boolean current = t == b.currentTab();
             String url = t.url();
             String host = url == null || url.startsWith("about:") ? null : History.hostOf(url);
@@ -573,6 +628,9 @@ final class Start extends FrameLayout {
                 + "glow around what has focus. The desktop button in the bar switches one site to Desktop."
                 : "Desktop mode asks sites for their computer layout, at normal text size. The desktop button "
                 + "in the bar switches one site back to TV mode.");
+        toggle("Lighter pages", b.lighterPages(), on -> b.toggleLighterPages());
+        note("Makes busy sites, like streams, smoother on a TV: switches off background blur and pauses "
+                + "a page's looping animations while a video plays.");
         row(0, "Clear cookies and site data", null, false, () -> {
             new AlertDialog.Builder(getContext(), Ui.dialog())
                     .setTitle("Clear cookies and site data?")

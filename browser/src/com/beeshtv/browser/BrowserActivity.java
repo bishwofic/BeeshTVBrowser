@@ -92,6 +92,8 @@ public class BrowserActivity extends Activity {
         WebView web;
         String url, title;
         volatile String host;
+        /** The website's own colour (its theme colour, or its background), for the bar. 0 until known. */
+        int color;
         final AtomicInteger blocked = new AtomicInteger();
         ScriptHandler frameFix;
 
@@ -108,6 +110,11 @@ public class BrowserActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private FrameLayout root, pages;
+    /** Behind the bar: takes the website's colour, so the bar looks like part of the site. */
+    private View topStrip;
+    private GradientDrawable barBg;
+    private final List<ImageView> barButtons = new ArrayList<>();
+    private TextView tip;
     private Start start;
     private Keyboard keyboard;
     /** A keyboard with letters was typed on; ours stays away until it's disconnected. */
@@ -166,6 +173,8 @@ public class BrowserActivity extends Activity {
         // Holds focus while the pointer is in charge, so no field takes the D-pad.
         root.setFocusable(true);
         root.setFocusableInTouchMode(true);
+        topStrip = new View(this);
+        root.addView(topStrip, new FrameLayout.LayoutParams(-1, pageTop, Gravity.TOP));
         pages = new FrameLayout(this);
         root.addView(pages, lp(-1, -1, Gravity.TOP, 0, pageTop, 0, 0));
         progress = new View(this);
@@ -184,8 +193,8 @@ public class BrowserActivity extends Activity {
                 else mouse(MotionEvent.ACTION_SCROLL, dx, dy);
             }
         });
-        root.addView(keyboard, lp(Math.min(dp(820), getResources().getDisplayMetrics().widthPixels - dp(48)), -2,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, 0, 0, dp(20)));
+        // Docked to the bottom edge, the full width of the screen.
+        root.addView(keyboard, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         int c = CursorView.sizePx(this);
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         // A keyboard going away (unplugged, switched off) brings ours back.
@@ -200,6 +209,10 @@ public class BrowserActivity extends Activity {
         restoreTabs();
         String url = b == null ? urlFrom(getIntent()) : null;
         if (url != null) openFromOutside(url);
+        else if (b != null && b.getBoolean("sheet", false) && !tab.empty()) {
+            hideStart();
+            showSheet(Start.Page.valueOf(b.getString("page", "SETTINGS")));
+        }
         else if (b != null && b.getBoolean("on_start", true)) showStart(Start.Page.valueOf(b.getString("page", "HOME")));
         else if (b != null && !tab.empty()) hideStart();
         else showStart(Start.Page.HOME);
@@ -227,6 +240,7 @@ public class BrowserActivity extends Activity {
     protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
         out.putBoolean("on_start", start.getVisibility() == View.VISIBLE);
+        out.putBoolean("sheet", start.isSheet());
         out.putString("page", start.page().name());
     }
 
@@ -264,6 +278,13 @@ public class BrowserActivity extends Activity {
     // ---------------------------------------------------------------- tabs
 
     List<Tab> tabs() { return tabs; }
+
+    /** The tabs with a website in them; an empty tab is just Home and isn't counted. */
+    List<Tab> openTabs() {
+        List<Tab> out = new ArrayList<>();
+        for (Tab t : tabs) if (!t.empty()) out.add(t);
+        return out;
+    }
     Tab currentTab() { return tab; }
 
     private Tab addTab() {
@@ -326,6 +347,7 @@ public class BrowserActivity extends Activity {
             select(tabs.get(Math.min(i, tabs.size() - 1)));
         }
         refreshBar();
+        saveTabs();
     }
 
     private void saveTabs() {
@@ -360,12 +382,22 @@ public class BrowserActivity extends Activity {
         @Override public boolean onCheckIsTextEditor() { return false; }
     }
 
-    /** Called by assets/frames.js when a text field on the page gains or loses focus. */
+    /** Called by assets/frames.js: a text field on the page gained or lost focus, or a request is due. */
     final class InputBridge {
         private final Tab tab;
         InputBridge(Tab t) { tab = t; }
         @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
         @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
+        /** Asked by the page before it fetches: would this be blocked here? Answers at once. */
+        @JavascriptInterface public boolean blocks(String url) {
+            String host = Uri.parse(url).getHost();
+            boolean no = host != null && !adsAllowed(tab.host) && (adblock.blocks(host) || dns.blocks(host, false));
+            if (no) {
+                int n = tab.blocked.incrementAndGet();
+                main.post(() -> { if (tab == BrowserActivity.this.tab) showBlocked(n); });
+            }
+            return no;
+        }
     }
 
     private WebView buildWebView(Tab t) {
@@ -420,7 +452,7 @@ public class BrowserActivity extends Activity {
                 if (adsAllowed(t.host) || !adblock.blocks(host) && !dns.blocks(host, false)) return null;
                 int n = t.blocked.incrementAndGet();
                 if (t == tab) main.post(() -> { if (t == tab) showBlocked(n); });
-                return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+                return BLOCKED;
             }
 
             @Override
@@ -431,8 +463,14 @@ public class BrowserActivity extends Activity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView v, String url) { readColor(t, v); }
+
+            @Override
             public void onPageFinished(WebView v, String url) {
                 history.add(url, v.getTitle());
+                readColor(t, v);
+                // Kept as it goes, so tabs survive the app being stopped without warning (updates).
+                saveTabs();
                 // TV mode: a clear glow around whatever has keyboard focus on the page.
                 if (!desktopFor(hostOf(url))) v.evaluateJavascript(FOCUS_GLOW, null);
                 applyZoom(v);
@@ -516,13 +554,86 @@ public class BrowserActivity extends Activity {
             return;
         }
         if (popupsBlocked()) script = "window.__beeshtvBlockPopups = true;\n" + script;
+        if (lighterPages()) script = "window.__beeshtvLight = true;\n" + script;
         t.frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
     }
+
+    /**
+     * A blocked request fails, as it would with any ad blocker. (An empty "200 OK" instead would look to
+     * the page, and to ad-block tests, as if the ad had loaded.)
+     */
+    private static final WebResourceResponse BLOCKED;
+    static {
+        BLOCKED = new WebResourceResponse("text/plain", "utf-8", null);
+        BLOCKED.setStatusCodeAndReasonPhrase(403, "Blocked");
+    }
+
+    /** The website's own colour: its theme-color, else the background of the page. */
+    private static final String PAGE_COLOR = "(function(){var m=document.querySelector('meta[name=\"theme-color\"]:not([media]),meta[name=\"theme-color\"]');"
+            + "if(m&&m.content)return m.content;var b=document.body&&getComputedStyle(document.body).backgroundColor;"
+            + "if(!b||b==='transparent'||/rgba\\(0, 0, 0, 0\\)/.test(b))b=getComputedStyle(document.documentElement).backgroundColor;"
+            + "return b||'';})()";
 
     private static final String FOCUS_GLOW = "(function(){if(document.getElementById('beeshtv-focus'))return;"
             + "var s=document.createElement('style');s.id='beeshtv-focus';"
             + "s.textContent=':focus-visible{outline:3px solid #e5484d!important;outline-offset:2px!important}';"
             + "(document.head||document.documentElement).appendChild(s);})()";
+
+    /** Reads the website's colour; the bar follows it while that tab is shown. */
+    private void readColor(Tab t, WebView v) {
+        v.evaluateJavascript(PAGE_COLOR, value -> {
+            int c = parseColor(value);
+            if (c == t.color) return;
+            t.color = c;
+            if (t == tab) paintBar();
+        });
+    }
+
+    /** "#abc", "#aabbcc", "rgb(…)" or "rgba(…)" (as a JSON string); white when unknown or see-through. */
+    static int parseColor(String json) {
+        try {
+            String s = json == null ? "" : json.replace("\"", "").trim().toLowerCase(java.util.Locale.ROOT);
+            if (s.startsWith("#")) {
+                String h = s.substring(1);
+                if (h.length() == 3) h = "" + h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+                if (h.length() >= 6) return 0xFF000000 | Integer.parseInt(h.substring(0, 6), 16);
+            }
+            Matcher m = Pattern.compile("rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:[,\\s/]+([\\d.]+))?").matcher(s);
+            if (m.find()) {
+                if (m.group(4) != null && Float.parseFloat(m.group(4)) < 0.5f) return 0xFFFFFFFF;
+                return 0xFF000000 | Math.round(Float.parseFloat(m.group(1))) << 16
+                        | Math.round(Float.parseFloat(m.group(2))) << 8 | Math.round(Float.parseFloat(m.group(3)));
+            }
+        } catch (RuntimeException ignored) { }
+        return 0xFFFFFFFF;
+    }
+
+    /**
+     * The bar in the website's colour: the strip behind it the same, the bar a step off it, and icons
+     * and text dark or light, whichever reads on it.
+     */
+    private void paintBar() {
+        int bg = tab != null && tab.color != 0 ? tab.color : Ui.BG;
+        boolean darkSite = Ui.luminance(bg) < 0.55f;
+        int fg = darkSite ? 0xFFF4F1F0 : 0xFF1C1717;
+        topStrip.setBackgroundColor(bg);
+        barBg.setColor(Ui.mix(bg, fg, 0.06f));
+        int hover = Ui.alpha(fg, 0.12f), selected = Ui.alpha(fg, 0.08f);
+        for (ImageView b : barButtons) {
+            b.setBackground(Ui.surface(this, 10, 0, hover, selected));
+            b.setImageTintList(ColorStateList.valueOf(Ui.alpha(fg, b == shieldBtn && !shielded() ? 0.45f : 0.8f)));
+        }
+        address.setBackground(Ui.surface(this, 10, Ui.alpha(fg, 0.07f), hover, selected));
+        address.setTextColor(fg);
+        address.setHintTextColor(Ui.alpha(fg, 0.5f));
+        address.setCompoundDrawablesRelative(Ui.icon(this, R.drawable.ic_search, Ui.alpha(fg, 0.5f), 16), null, null, null);
+        blockedCount.setTextColor(Ui.alpha(fg, 0.55f));
+        tabCount.setTextColor(Ui.alpha(fg, 0.55f));
+        updateBtn.setTextColor(fg);
+        updateBtn.setBackground(Ui.surface(this, 8, Ui.alpha(fg, 0.08f), hover, selected));
+    }
+
+    private boolean shielded() { return tab != null && adblock.enabled() && !adsAllowed(tab.host); }
 
     /** Shown in place of a site the DNS service blocks. */
     private WebResourceResponse blockedPage(String host) {
@@ -660,6 +771,18 @@ public class BrowserActivity extends Activity {
 
     boolean popupsBlocked() { return sp.getBoolean("block_popups", true); }
 
+    /** Backdrop blur off, looping decorations paused while a video plays (see assets/frames.js). */
+    boolean lighterPages() { return sp.getBoolean("lighter_pages", true); }
+
+    void toggleLighterPages() {
+        sp.edit().putBoolean("lighter_pages", !lighterPages()).apply();
+        for (Tab t : tabs) {
+            if (t.web == null) continue;
+            installFrameFix(t, t.web);
+            if (!t.empty()) t.web.reload();
+        }
+    }
+
     void togglePopups() {
         sp.edit().putBoolean("block_popups", !popupsBlocked()).apply();
         for (Tab t : tabs) if (t.web != null) installFrameFix(t, t.web);
@@ -735,6 +858,7 @@ public class BrowserActivity extends Activity {
         if (hovered != null) hovered.setHovered(false);
         if (hit != null) hit.setHovered(true);
         hovered = hit;
+        if (hit != null && hit.getParent() == bar && hit.getContentDescription() != null) showTip(hit); else hideTip();
     }
 
     /**
@@ -842,11 +966,11 @@ public class BrowserActivity extends Activity {
         // starts a search.
         if (down && isLetterFromKeyboard(e)) {
             physicalKeyboard = true;
-            if (keyboard.open()) keyboard.close();
+            if (keyboard.isOpen()) keyboard.close();
             if (onStart && !(focused instanceof EditText)) start.focusSearch();
             return super.dispatchKeyEvent(e);
         }
-        if (keyboard.open() && keyboard.key(e)) return true;
+        if (keyboard.isOpen() && keyboard.key(e)) return true;
 
         if (code == KeyEvent.KEYCODE_MENU) {
             if (!down) {
@@ -930,12 +1054,12 @@ public class BrowserActivity extends Activity {
         field.setOnFocusChangeListener((v, has) -> {
             if (has && !physicalKeyboard) keyboard.show(fieldTarget(field));
             if (!has) {
-                if (keyboard.open() && keyboard.getTag() == field) keyboard.close();
+                if (keyboard.isOpen() && keyboard.getTag() == field) keyboard.close();
                 if (onLeave != null) onLeave.run();
             }
         });
         // Clicking a field that already has focus brings the keyboard back after it was put away.
-        field.setOnClickListener(v -> { if (!physicalKeyboard && !keyboard.open()) keyboard.show(fieldTarget(field)); });
+        field.setOnClickListener(v -> { if (!physicalKeyboard && !keyboard.isOpen()) keyboard.show(fieldTarget(field)); });
     }
 
     private Keyboard.Target fieldTarget(EditText f) {
@@ -961,7 +1085,7 @@ public class BrowserActivity extends Activity {
         };
     }
 
-    private final Runnable pageFieldLeft = () -> { if (keyboard.open() && keyboard.getTag() == this.pageTarget) keyboard.close(); };
+    private final Runnable pageFieldLeft = () -> { if (keyboard.isOpen() && keyboard.getTag() == this.pageTarget) keyboard.close(); };
 
     /** A field on the page took focus: our keyboard comes up (not over our own screens). */
     private void pageFieldFocused(Tab t, boolean has) {
@@ -975,6 +1099,8 @@ public class BrowserActivity extends Activity {
         if (physicalKeyboard || start.getVisibility() == View.VISIBLE || fullscreen != null) return;
         keyboard.show(pageTarget);
         keyboard.setTag(pageTarget);
+        // Keep the field in view above the keyboard.
+        main.postDelayed(() -> web.evaluateJavascript("(function(e){if(e&&e.scrollIntoView)e.scrollIntoView({block:'center'})})(document.activeElement)", null), 260);
     }
 
     /** Typing on the page arrives as key presses, the way a real keyboard's would. */
@@ -1010,6 +1136,7 @@ public class BrowserActivity extends Activity {
         bg.setCornerRadius(dp(14));
         bg.setColor(Ui.SURFACE);
         bar.setBackground(bg);
+        barBg = bg;
 
         bar.addView(button(R.drawable.ic_back, "Back", v -> { if (web.canGoBack()) web.goBack(); }));
         bar.addView(button(R.drawable.ic_forward, "Forward", v -> { if (web.canGoForward()) web.goForward(); }));
@@ -1055,11 +1182,11 @@ public class BrowserActivity extends Activity {
         bar.addView(shieldBtn);
         blockedCount = Ui.figures(this, 13, 400, Ui.TEXT_3);
         bar.addView(blockedCount, llp(-2, -2, 0f, 0, dp(4)));
-        desktopBtn = button(R.drawable.ic_desktop, "Desktop site", v -> toggleDesktop());
+        desktopBtn = button(R.drawable.ic_tv, "TV site", v -> toggleDesktop());
         bar.addView(desktopBtn);
         bar.addView(button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1)));
         bar.addView(button(R.drawable.ic_zoom_in, "Zoom in", v -> stepZoom(1)));
-        bar.addView(button(R.drawable.ic_tabs, "Tabs", v -> showStart(Start.Page.TABS)));
+        bar.addView(button(R.drawable.ic_tabs, "Tabs", v -> showSheet(Start.Page.TABS)));
         tabCount = Ui.figures(this, 13, 400, Ui.TEXT_3);
         bar.addView(tabCount, llp(-2, -2, 0f, 0, dp(4)));
 
@@ -1072,22 +1199,57 @@ public class BrowserActivity extends Activity {
         updateBtn.setVisibility(View.GONE);
         bar.addView(updateBtn, llp(-2, -2, 0f, dp(4), dp(4)));
 
-        bar.addView(button(R.drawable.ic_settings, "Settings", v -> showStart(Start.Page.SETTINGS)));
+        bar.addView(button(R.drawable.ic_settings, "Settings", v -> showSheet(Start.Page.SETTINGS)));
+
+        // What a bar button does, under it while the pointer or mouse is on it.
+        tip = Ui.text(this, 13, 500, Ui.TEXT);
+        tip.setPadding(dp(10), dp(6), dp(10), dp(6));
+        GradientDrawable tb = new GradientDrawable();
+        tb.setCornerRadius(dp(8));
+        tb.setColor(Ui.SURFACE);
+        tip.setBackground(tb);
+        tip.setElevation(dp(6));
+        tip.setVisibility(View.GONE);
         return bar;
     }
 
-    /** The bar shows the current tab: its address, what's blocked, desktop or phone site. */
+    /** The bar shows the current tab: its address, what's blocked, which version of the site, its colour. */
     private void refreshBar() {
         if (tab == null || address == null) return;
         if (!address.hasFocus()) address.setText(shown(tab.url()));
         String h = tab.host;
-        boolean site = h != null;
-        boolean shielded = adblock.enabled() && !adsAllowed(h);
-        shieldBtn.setImageTintList(ColorStateList.valueOf(shielded ? Ui.TEXT : Ui.TEXT_3));
         showBlocked(tab.blocked.get());
-        desktopBtn.setSelected(site && desktopFor(h));
-        desktopBtn.setImageTintList(ColorStateList.valueOf(desktopBtn.isSelected() ? Ui.TEXT : Ui.TEXT_2));
-        tabCount.setText(String.valueOf(tabs.size()));
+        shieldBtn.setContentDescription(shielded() ? "Ads blocked on this site" : "Ads allowed on this site");
+        // Shows the version of the site that's on screen; clicking switches to the other.
+        boolean desktop = desktopFor(h);
+        desktopBtn.setImageResource(desktop ? R.drawable.ic_desktop : R.drawable.ic_tv);
+        desktopBtn.setContentDescription(desktop ? "Desktop site" : "TV site");
+        int open = openTabs().size();
+        tabCount.setText(open == 0 ? "" : String.valueOf(open));
+        paintBar();
+    }
+
+    /** The label of a bar button, just under it. */
+    private void showTip(View v) {
+        CharSequence label = v.getContentDescription();
+        if (label == null || bar.getVisibility() != View.VISIBLE || start.getVisibility() == View.VISIBLE) { hideTip(); return; }
+        if (tip.getParent() == null) root.addView(tip, root.indexOfChild(cursor), new FrameLayout.LayoutParams(-2, -2));
+        tip.setText(label);
+        tip.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        int[] at = new int[2];
+        v.getLocationInWindow(at);
+        float x = at[0] + v.getWidth() / 2f - tip.getMeasuredWidth() / 2f;
+        tip.setTranslationX(Math.max(dp(8), Math.min(root.getWidth() - tip.getMeasuredWidth() - dp(8), x)));
+        tip.setTranslationY(at[1] + v.getHeight() + dp(8));
+        tip.setVisibility(View.VISIBLE);
+        tip.setAlpha(0f);
+        tip.animate().alpha(1f).setStartDelay(250).setDuration(120).start();
+    }
+
+    private void hideTip() {
+        if (tip == null) return;
+        tip.animate().cancel();
+        tip.setVisibility(View.GONE);
     }
 
     /** Menu: the D-pad moves between the bar's buttons, starting at the address, until Down or Back. */
@@ -1122,6 +1284,8 @@ public class BrowserActivity extends Activity {
         if (web != null) web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
         exitBar();
         keyboard.close();
+        hideTip();
+        start.sheet(false);
         if (start.getVisibility() != View.VISIBLE) {
             start.setVisibility(View.VISIBLE);
             start.setAlpha(0f);
@@ -1134,8 +1298,25 @@ public class BrowserActivity extends Activity {
         root.requestFocus();
     }
 
+    /** Tabs, History, Settings and so on as a card over the website; Back closes it. */
+    void showSheet(Start.Page p) {
+        if (tab.empty()) { showStart(p); return; }
+        exitBar();
+        keyboard.close();
+        hideTip();
+        start.sheet(true);
+        start.setVisibility(View.VISIBLE);
+        start.setAlpha(1f);
+        start.show(p);
+        hovered = null;
+        root.requestFocus();
+    }
+
+    void closeSheet() { hideStart(); }
+
     private void hideStart() {
         keyboard.close();
+        start.sheet(false);
         start.setVisibility(View.GONE);
         pages.setVisibility(View.VISIBLE);
         hovered = null;
@@ -1192,6 +1373,13 @@ public class BrowserActivity extends Activity {
         b.setBackground(Ui.surface(this, 10, 0));
         b.setOnClickListener(click);
         b.setLayoutParams(llp(dp(42), dp(42), 0f, dp(1), dp(1)));
+        // A mouse gets the same label as our pointer.
+        b.setOnHoverListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_HOVER_ENTER) showTip(v);
+            else if (e.getAction() == MotionEvent.ACTION_HOVER_EXIT) hideTip();
+            return false;
+        });
+        barButtons.add(b);
         return b;
     }
 

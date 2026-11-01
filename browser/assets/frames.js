@@ -65,6 +65,71 @@
     document.addEventListener('focusout', function (e) { if (typable(e.target)) BeeshTVInput.blur(); }, true);
   }
 
-  // 4. Read as a regular browser to players that check.
+  // 4. Blocked hosts fail the way they do with any ad blocker: the browser decides (adblock lists,
+  //    DNS protection, and sites where ads are allowed). Requests the page makes from script would
+  //    otherwise "succeed" with the browser's empty answer.
+  if (window.BeeshTVInput && BeeshTVInput.blocks) {
+    var blocked = function (url) {
+      try { return BeeshTVInput.blocks(new URL(url, location.href).href); } catch (e) { return false; }
+    };
+    var realFetch = window.fetch;
+    if (realFetch) window.fetch = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || String(input);
+      if (blocked(url)) return Promise.reject(new TypeError('Failed to fetch'));
+      return realFetch.apply(this, arguments);
+    };
+    var open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this.__beeshtvBlocked = blocked(url);
+      return open.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function () {
+      if (!this.__beeshtvBlocked) return send.apply(this, arguments);
+      var x = this;
+      setTimeout(function () { x.dispatchEvent(new Event('error')); x.dispatchEvent(new Event('loadend')); }, 0);
+    };
+    if (navigator.sendBeacon) {
+      var beacon = navigator.sendBeacon.bind(navigator);
+      navigator.sendBeacon = function (url, data) { return blocked(url) ? false : beacon(url, data); };
+    }
+  }
+
+  // 5. Lighter pages (BrowserActivity sets __beeshtvLight): a TV draws every page effect itself, every
+  //    frame. Backdrop blur, the costliest, is switched off; and while a video plays, the page's looping
+  //    decorations (spinners, carousels, pulses) are paused, and resume when it stops.
+  if (window.__beeshtvLight) {
+    var css = '*,*::before,*::after{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}';
+    var addStyle = function () {
+      var st = document.createElement('style');
+      st.textContent = css;
+      (document.head || document.documentElement).appendChild(st);
+    };
+    if (document.documentElement) addStyle(); else document.addEventListener('DOMContentLoaded', addStyle);
+    var paused = [];
+    var anyPlaying = function () {
+      var vs = document.getElementsByTagName('video');
+      for (var i = 0; i < vs.length; i++) if (!vs[i].paused && !vs[i].ended) return true;
+      return false;
+    };
+    var settle = function () {
+      if (!document.getAnimations) return;
+      if (anyPlaying()) {
+        document.getAnimations().forEach(function (an) {
+          var t = an.effect && an.effect.getTiming && an.effect.getTiming();
+          if (t && t.iterations === Infinity && an.playState === 'running') { an.pause(); paused.push(an); }
+        });
+      } else {
+        paused.forEach(function (an) { try { an.play(); } catch (e) {} });
+        paused = [];
+      }
+    };
+    ['playing', 'pause', 'ended'].forEach(function (ev) {
+      document.addEventListener(ev, function () { setTimeout(settle, 50); }, true);
+    });
+    // Decorations added later while the video plays are caught too.
+    setInterval(function () { if (paused.length || anyPlaying()) settle(); }, 3000);
+  }
+
+  // 6. Read as a regular browser to players that check.
   try { Object.defineProperty(navigator, 'webdriver', { get: function () { return false; } }); } catch (e) {}
 })();
