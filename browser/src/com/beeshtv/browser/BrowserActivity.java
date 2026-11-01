@@ -72,6 +72,14 @@ public class BrowserActivity extends Activity {
             {"Bing", "https://www.bing.com/search?q="},
             {"Brave", "https://search.brave.com/search?q="},
     };
+    /** How sites are asked for their layout: TV (phone or TV layout, larger text) or Desktop. */
+    static final String[] MODES = {"TV", "Desktop"};
+    static final int TV = 0, DESKTOP = 1;
+    /** What drives the pointer: the remote, a mouse, or whichever was used last. */
+    static final String[] INPUTS = {"Automatic", "Remote", "Mouse"};
+    static final int AUTO = 0, REMOTE = 1, MOUSE = 2;
+    /** Text size in TV mode, as a percentage: readable from the couch without breaking layouts. */
+    static final int TV_TEXT = 115;
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
     static final int REQ_VOICE = 7;
     /** Each open page takes memory on a TV that has little; more than this and pages start reloading. */
@@ -127,6 +135,7 @@ public class BrowserActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         sp = getSharedPreferences("browser", MODE_PRIVATE);
+        Ui.theme(sp.getBoolean("light", false));
         adblock = new AdBlock(this, sp);
         dns = new Dns(sp);
         dns.warmUp();
@@ -174,10 +183,13 @@ public class BrowserActivity extends Activity {
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         setContentView(root);
 
+        if (input() == MOUSE) usingMouse(true);
         restoreTabs();
-        String url = urlFrom(getIntent());
-        if (url == null) showStart(Start.Page.HOME);
-        else openFromOutside(url);
+        String url = b == null ? urlFrom(getIntent()) : null;
+        if (url != null) openFromOutside(url);
+        else if (b != null && b.getBoolean("on_start", true)) showStart(Start.Page.valueOf(b.getString("page", "HOME")));
+        else if (b != null && !tab.empty()) hideStart();
+        else showStart(Start.Page.HOME);
     }
 
     @Override
@@ -193,8 +205,16 @@ public class BrowserActivity extends Activity {
         if (web != null) web.onResume();
         updater.check(false);
         adblock.refreshIfDue(false, null);
-        if (start.getVisibility() == View.VISIBLE) start.refresh();
+        if (start.getVisibility() == View.VISIBLE) { start.refresh(); start.show(start.page()); }
         onUpdateChanged();
+    }
+
+    /** Switching theme rebuilds the screen; this brings back the page you were on. */
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putBoolean("on_start", start.getVisibility() == View.VISIBLE);
+        out.putString("page", start.page().name());
     }
 
     @Override
@@ -381,6 +401,8 @@ public class BrowserActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 history.add(url, v.getTitle());
+                // TV mode: a clear glow around whatever has keyboard focus on the page.
+                if (!desktopFor(hostOf(url))) v.evaluateJavascript(FOCUS_GLOW, null);
                 applyZoom(v);
                 if (t == tab) refreshBar();
             }
@@ -465,14 +487,19 @@ public class BrowserActivity extends Activity {
         t.frameFix = WebViewCompat.addDocumentStartJavaScript(w, script, java.util.Collections.singleton("*"));
     }
 
+    private static final String FOCUS_GLOW = "(function(){if(document.getElementById('beeshtv-focus'))return;"
+            + "var s=document.createElement('style');s.id='beeshtv-focus';"
+            + "s.textContent=':focus-visible{outline:3px solid #e5484d!important;outline-offset:2px!important}';"
+            + "(document.head||document.documentElement).appendChild(s);})()";
+
     /** Shown in place of a site the DNS service blocks. */
     private WebResourceResponse blockedPage(String host) {
         String html = "<!doctype html><meta name=viewport content='width=device-width'>"
                 + "<body style='margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;"
-                + "justify-content:center;background:#0b0a0a;color:#f4f1f0;font:20px system-ui,sans-serif'>"
+                + "justify-content:center;background:" + Ui.css(Ui.BG) + ";color:" + Ui.css(Ui.TEXT) + ";font:20px system-ui,sans-serif'>"
                 + "<div style='font-size:36px;font-weight:500;margin-bottom:14px'>Blocked</div>"
-                + "<div style='color:#b8b5b4'>" + TextUtils.htmlEncode(host) + " is blocked by " + dns.name() + "</div>"
-                + "<div style='color:#7c7978;margin-top:10px;font-size:16px'>Settings, Blocking, DNS protection picks the service or turns it off</div>";
+                + "<div style='opacity:.75'>" + TextUtils.htmlEncode(host) + " is blocked by " + dns.name() + "</div>"
+                + "<div style='opacity:.5;margin-top:10px;font-size:16px'>Settings, Blocking, DNS protection picks the service or turns it off</div>";
         return new WebResourceResponse("text/html", "utf-8", new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8)));
     }
 
@@ -512,13 +539,14 @@ public class BrowserActivity extends Activity {
             return "https://" + t;
         }
         try {
-            return engine()[1] + URLEncoder.encode(t, "UTF-8");
+            return engineEntry()[1] + URLEncoder.encode(t, "UTF-8");
         } catch (java.io.UnsupportedEncodingException e) {
-            return engine()[1] + t;
+            return engineEntry()[1] + t;
         }
     }
 
-    private String[] engine() { return ENGINES[Math.floorMod(sp.getInt("engine", 0), ENGINES.length)]; }
+    int engine() { return Math.floorMod(sp.getInt("engine", 0), ENGINES.length); }
+    private String[] engineEntry() { return ENGINES[engine()]; }
 
     private static String shown(String url) {
         return url == null || url.startsWith("about:") ? "" : url;
@@ -536,10 +564,12 @@ public class BrowserActivity extends Activity {
         return host == null ? byDefault : sp.getBoolean("desktop:" + host, byDefault);
     }
 
-    /** Sets the user agent this address wants; true if it changed. */
+    /** Sets the user agent (and text size) this address wants; true if the agent changed. */
     private boolean applyAgentFor(WebView w, String url) {
-        String want = desktopFor(hostOf(url)) ? desktopUA : mobileUA;
+        boolean desktop = desktopFor(hostOf(url));
+        String want = desktop ? desktopUA : mobileUA;
         WebSettings s = w.getSettings();
+        s.setTextZoom(desktop ? 100 : TV_TEXT);
         if (want.equals(s.getUserAgentString())) return false;
         s.setUserAgentString(want);
         return true;
@@ -579,10 +609,10 @@ public class BrowserActivity extends Activity {
 
     // ---- settings, used by Start
 
-    String engineName() { return engine()[0]; }
+    String engineName() { return engineEntry()[0]; }
 
-    void cycleEngine() {
-        sp.edit().putInt("engine", Math.floorMod(sp.getInt("engine", 0) + 1, ENGINES.length)).apply();
+    void setEngine(int i) {
+        sp.edit().putInt("engine", i).apply();
         address.setHint("Search " + engineName() + " or type a web address");
     }
 
@@ -590,8 +620,6 @@ public class BrowserActivity extends Activity {
     AdBlock adblock() { return adblock; }
     Updater updater() { return updater; }
     History history() { return history; }
-
-    void cycleDns() { dns.setService(dns.service() + 1); }
 
     void toggleAds() {
         adblock.setEnabled(!adblock.enabled());
@@ -605,11 +633,30 @@ public class BrowserActivity extends Activity {
         for (Tab t : tabs) if (t.web != null) installFrameFix(t, t.web);
     }
 
-    boolean desktopDefault() { return sp.getBoolean("desktop_default", false); }
+    int mode() { return sp.getInt("mode", sp.getBoolean("desktop_default", false) ? DESKTOP : TV); }
+    boolean desktopDefault() { return mode() == DESKTOP; }
 
-    void toggleDesktopDefault() {
-        sp.edit().putBoolean("desktop_default", !desktopDefault()).apply();
+    /** Tabs, history and sites stay as they are; open pages load again in the new mode. */
+    void setMode(int m) {
+        sp.edit().putInt("mode", m).apply();
+        for (Tab t : tabs) {
+            if (t.web == null || t.empty()) continue;
+            if (applyAgentFor(t.web, t.web.getUrl())) t.web.reload();
+        }
         refreshBar();
+    }
+
+    int input() { return Math.floorMod(sp.getInt("input", AUTO), INPUTS.length); }
+
+    void setInput(int i) {
+        sp.edit().putInt("input", i).apply();
+        usingMouse(i == MOUSE);
+    }
+
+    /** Dark or light: everything is drawn again in the new colours, on the same page. */
+    void setLight(boolean light) {
+        sp.edit().putBoolean("light", light).apply();
+        recreate();
     }
 
     void clearSiteData() {
@@ -638,7 +685,7 @@ public class BrowserActivity extends Activity {
         if (fullscreen == null) return;
         root.removeView(fullscreen);
         fullscreen = null;
-        cursor.setVisibility(View.VISIBLE);
+        cursor.setVisibility(mouseActive ? View.GONE : View.VISIBLE);
         pages.setVisibility(View.VISIBLE);
         bar.setVisibility(View.VISIBLE);
         progress.setVisibility(View.VISIBLE);
@@ -721,6 +768,30 @@ public class BrowserActivity extends Activity {
         else mouse(MotionEvent.ACTION_SCROLL, 0, dir * pages.getHeight() * 0.8f);
     }
 
+    // ---------------------------------------------------------------- a real mouse
+
+    /** A Bluetooth or USB mouse moved or clicked: it has its own pointer, so ours steps aside. */
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent e) {
+        if (e.isFromSource(InputDevice.SOURCE_MOUSE) && input() != REMOTE) usingMouse(true);
+        return super.dispatchGenericMotionEvent(e);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent e) {
+        if (e.isFromSource(InputDevice.SOURCE_MOUSE) && input() != REMOTE) usingMouse(true);
+        return super.dispatchTouchEvent(e);
+    }
+
+    private boolean mouseActive;
+
+    private void usingMouse(boolean on) {
+        if (mouseActive == on) return;
+        mouseActive = on;
+        cursor.setVisibility(on || fullscreen != null ? View.GONE : View.VISIBLE);
+        if (on && hovered != null) { hovered.setHovered(false); hovered = null; }
+    }
+
     // ---------------------------------------------------------------- keys
 
     @Override
@@ -756,6 +827,17 @@ public class BrowserActivity extends Activity {
 
         // Moving the pointer up or down leaves a field on the start screen.
         if (onStart && f instanceof EditText && down) { hideKeyboard(f); root.requestFocus(); }
+
+        // Mouse mode: the arrows scroll; OK and Back work as usual.
+        if (input() == MOUSE && code >= KeyEvent.KEYCODE_DPAD_UP && code <= KeyEvent.KEYCODE_DPAD_RIGHT) {
+            if (down && (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) {
+                float by = (code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1) * dp(120);
+                if (onStart) start.scrollBy(by); else mouse(MotionEvent.ACTION_SCROLL, 0, by);
+            }
+            return true;
+        }
+        // An arrow on the remote brings our pointer back after the mouse.
+        if (code >= KeyEvent.KEYCODE_DPAD_UP && code <= KeyEvent.KEYCODE_DPAD_RIGHT && down) usingMouse(false);
 
         switch (code) {
             case KeyEvent.KEYCODE_DPAD_UP: cursor.press(CursorView.UP, down); return true;

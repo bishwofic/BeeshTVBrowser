@@ -48,9 +48,9 @@ import java.util.concurrent.Executors;
  * Everything is clicked with the pointer, like a page.
  */
 final class Start extends FrameLayout {
-    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT }
+    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, INPUT, UPDATES, HELP, ABOUT }
 
-    static final String[] BACKGROUNDS = {"Black", "TV Home photo", "Frosted TV photo"};
+    static final String[] BACKGROUNDS = {"Plain", "Frosted TV photo"};
     static final String DEFAULT_SHORTCUTS = "YouTube|https://www.youtube.com;Google|https://www.google.com;"
             + "Wikipedia|https://www.wikipedia.org";
     static final int SITES = 5;
@@ -105,6 +105,22 @@ final class Start extends FrameLayout {
         side.addView(brand, lp(-1, -2, 0, 0, 0, dp(32)));
         nav = column(c);
         side.addView(nav, lp(-1, -2, 0, 0, 0, 0));
+        side.addView(new View(c), new LinearLayout.LayoutParams(-1, 0, 1f));
+        // Dark or light, at the foot of the sidebar: shows what you'd switch to.
+        LinearLayout theme = new LinearLayout(c);
+        theme.setGravity(Gravity.CENTER_VERTICAL);
+        theme.setPadding(dp(20), 0, dp(12), 0);
+        theme.setBackground(Ui.surface(c, 10, 0));
+        theme.setClickable(true);
+        ImageView ti = new ImageView(c);
+        ti.setImageResource(Ui.light ? R.drawable.ic_moon : R.drawable.ic_sun);
+        ti.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
+        theme.addView(ti, lp(dp(18), dp(18), 0, 0, dp(12), 0));
+        TextView tt = Ui.text(c, 14, 500, Ui.TEXT_2);
+        tt.setText(Ui.light ? "Dark mode" : "Light mode");
+        theme.addView(tt);
+        theme.setOnClickListener(v -> b.setLight(!Ui.light));
+        side.addView(theme, lp(-1, dp(40), 0, 0, 0, 0));
         addView(side, new LayoutParams(dp(SIDEBAR), -1));
         View edge = new View(c);
         edge.setBackgroundColor(Ui.HAIRLINE);
@@ -134,18 +150,6 @@ final class Start extends FrameLayout {
         // Home: the mark and name, search, your sites, in the middle.
         LinearLayout h = column(c);
         h.setGravity(Gravity.CENTER_HORIZONTAL);
-        LinearLayout title = new LinearLayout(c);
-        title.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView big = new ImageView(c);
-        big.setImageResource(R.drawable.mark);
-        title.addView(big, lp(dp(36), dp(36), 0, 0, dp(14), 0));
-        TextView name = Ui.text(c, 30, 500, Ui.TEXT);
-        SpannableStringBuilder nm = new SpannableStringBuilder("BeeshTV Browser");
-        nm.setSpan(new ForegroundColorSpan(Ui.TEXT_2), 8, nm.length(), 0);
-        name.setText(nm);
-        title.addView(name);
-        h.addView(title, lp(-2, -2, 0, 0, 0, 0));
-
         LinearLayout box = new LinearLayout(c);
         box.setGravity(Gravity.CENTER_VERTICAL);
         box.setPadding(dp(18), 0, dp(8), 0);
@@ -170,7 +174,7 @@ final class Start extends FrameLayout {
         box.addView(mic, lp(dp(36), dp(36), 0, 0, dp(4), 0));
         ImageView arrow = iconButton(R.drawable.ic_arrow, "Go", v -> go());
         box.addView(arrow, lp(dp(36), dp(36), 0, 0, 0, 0));
-        h.addView(box, lp(dp(WIDE), dp(52), 0, dp(32), 0, 0));
+        h.addView(box, lp(dp(WIDE), dp(52), 0, 0, 0, 0));
 
         LinearLayout head = new LinearLayout(c);
         head.setGravity(Gravity.CENTER_VERTICAL);
@@ -211,14 +215,13 @@ final class Start extends FrameLayout {
         if (wx != null) weatherIcon.setImageResource(Backdrop.icon(wx.code, wx.day));
         weather.setText(wx == null ? "" : wx.temp + "°  ·  ");
         loadPhoto();
-        show(page);
     }
 
     /** Back on this screen: up from a settings page, else to Home. False when already on Home. */
     boolean back() {
         switch (page) {
             case HOME: return false;
-            case SEARCH: case BLOCKING: case SITES: case LOOK: case UPDATES: show(Page.SETTINGS); return true;
+            case SEARCH: case BLOCKING: case SITES: case LOOK: case INPUT: case UPDATES: show(Page.SETTINGS); return true;
             default: show(Page.HOME); return true;
         }
     }
@@ -233,6 +236,8 @@ final class Start extends FrameLayout {
     // ---------------------------------------------------------------- pages
 
     void show(Page p) {
+        boolean same = page == p;
+        if (!same) open = null;
         page = p;
         fillNav();
         boolean isHome = p == Page.HOME;
@@ -240,7 +245,7 @@ final class Start extends FrameLayout {
         scroll.setVisibility(isHome ? GONE : VISIBLE);
         if (isHome) { fillSites(); return; }
         list.removeAllViews();
-        scroll.scrollTo(0, 0);
+        if (!same) scroll.scrollTo(0, 0);
         switch (p) {
             case TABS: fillTabs(); break;
             case HISTORY: fillHistory(); break;
@@ -249,6 +254,7 @@ final class Start extends FrameLayout {
             case BLOCKING: fillBlocking(); break;
             case SITES: fillSitesSettings(); break;
             case LOOK: fillLook(); break;
+            case INPUT: fillInput(); break;
             case UPDATES: fillUpdates(); break;
             case HELP: fillHelp(); break;
             case ABOUT: fillAbout(); break;
@@ -280,7 +286,8 @@ final class Start extends FrameLayout {
     }
 
     private static boolean isSettings(Page p) {
-        return p == Page.SEARCH || p == Page.BLOCKING || p == Page.SITES || p == Page.LOOK || p == Page.UPDATES;
+        return p == Page.SEARCH || p == Page.BLOCKING || p == Page.SITES || p == Page.LOOK || p == Page.INPUT
+                || p == Page.UPDATES;
     }
 
     /** A sidebar row; the current one sits on a faint frosted step with the red standby dot. */
@@ -401,7 +408,7 @@ final class Start extends FrameLayout {
         field.setSingleLine(true);
         field.setHint("Web address, like youtube.com");
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        new AlertDialog.Builder(getContext(), android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        new AlertDialog.Builder(getContext(), Ui.dialog())
                 .setTitle("Add a site to Home")
                 .setView(field)
                 .setPositiveButton("Add", (dlg, w) -> {
@@ -423,7 +430,7 @@ final class Start extends FrameLayout {
     }
 
     private void unpin(int index, String name) {
-        new AlertDialog.Builder(getContext(), android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        new AlertDialog.Builder(getContext(), Ui.dialog())
                 .setTitle("Remove " + name + " from Home?")
                 .setPositiveButton("Remove", (dlg, w) -> {
                     List<String[]> l = pinned();
@@ -460,7 +467,7 @@ final class Start extends FrameLayout {
         LinearLayout head = title("History", null);
         if (!b.history().all().isEmpty()) {
             TextView clear = link("Clear history", () -> {
-                new AlertDialog.Builder(getContext(), android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                new AlertDialog.Builder(getContext(), Ui.dialog())
                         .setTitle("Clear history?")
                         .setMessage("Pages you've visited are removed from this TV. Cookies and sign-ins stay.")
                         .setPositiveButton("Clear", (d, w) -> { b.history().clear(); show(Page.HISTORY); })
@@ -506,9 +513,10 @@ final class Start extends FrameLayout {
         row(R.drawable.ic_search, "Search", b.engineName(), true, () -> show(Page.SEARCH));
         row(R.drawable.ic_shield, "Blocking", b.dns().name() + (b.adblock().enabled() ? " · ads blocked" : ""),
                 true, () -> show(Page.BLOCKING));
-        row(R.drawable.ic_desktop, "Sites", b.desktopDefault() ? "Desktop sites" : "Phone sites", true,
-                () -> show(Page.SITES));
-        row(R.drawable.ic_home, "Home screen", BACKGROUNDS[background()], true, () -> show(Page.LOOK));
+        row(R.drawable.ic_desktop, "Sites", BrowserActivity.MODES[b.mode()] + " mode", true, () -> show(Page.SITES));
+        row(Ui.light ? R.drawable.ic_sun : R.drawable.ic_moon, "Appearance", (Ui.light ? "Light" : "Dark") + " · "
+                + BACKGROUNDS[background()], true, () -> show(Page.LOOK));
+        row(R.drawable.ic_mouse, "Input", BrowserActivity.INPUTS[b.input()], true, () -> show(Page.INPUT));
         row(R.drawable.ic_update, "Updates", updateSummary(), true, () -> show(Page.UPDATES));
     }
 
@@ -530,36 +538,44 @@ final class Start extends FrameLayout {
         title(name, null);
     }
 
+    private static String[] names(String[][] table) {
+        String[] out = new String[table.length];
+        for (int i = 0; i < table.length; i++) out[i] = table[i][0];
+        return out;
+    }
+
     private void fillSearch() {
         backToSettings("Search");
-        row(0, "Search engine", b.engineName(), false, () -> { b.cycleEngine(); show(Page.SEARCH); });
+        choice("Search engine", names(BrowserActivity.ENGINES), b.engine(), b::setEngine);
         note("Anything you type that isn't a web address is searched with this. Voice search uses the "
                 + "TV's own speech recognition.");
     }
 
     private void fillBlocking() {
         backToSettings("Blocking");
-        row(0, "DNS protection", b.dns().name(), false, () -> { b.cycleDns(); show(Page.BLOCKING); });
-        row(0, "Block ads and trackers", b.adblock().enabled() ? "On" : "Off", false,
-                () -> { b.toggleAds(); show(Page.BLOCKING); });
+        choice("DNS protection", names(Dns.SERVICES), b.dns().service(), i -> b.dns().setService(i));
+        toggle("Block ads and trackers", b.adblock().enabled(), on -> b.toggleAds());
         long at = b.adblock().updatedAt();
         row(0, "Block list", String.format(Locale.getDefault(), "%,d sites · %s", b.adblock().size(),
                 at == 0 ? "built-in" : "updated " + DateUtils.getRelativeTimeSpanString(at)), false,
                 () -> b.adblock().refreshIfDue(true, () -> show(Page.BLOCKING)));
-        row(0, "Block pop-ups", b.popupsBlocked() ? "On" : "Off", false,
-                () -> { b.togglePopups(); show(Page.BLOCKING); });
+        toggle("Block pop-ups", b.popupsBlocked(), on -> b.togglePopups());
         note("DNS protection checks each site with the service you pick and stops what it blocks. "
                 + "The shield in the bar lets ads through on one site that won't work without them.");
     }
 
     private void fillSitesSettings() {
         backToSettings("Sites");
-        row(0, "Desktop sites by default", b.desktopDefault() ? "On" : "Off", false,
-                () -> { b.toggleDesktopDefault(); show(Page.SITES); });
+        choice("Browsing mode", BrowserActivity.MODES, b.mode(), b::setMode);
+        note(b.mode() == BrowserActivity.TV
+                ? "TV mode asks sites for their phone or TV layout, makes text a little larger and shows a "
+                + "glow around what has focus. The desktop button in the bar switches one site to Desktop."
+                : "Desktop mode asks sites for their computer layout, at normal text size. The desktop button "
+                + "in the bar switches one site back to TV mode.");
         row(0, "Clear cookies and site data", null, false, () -> {
-            new AlertDialog.Builder(getContext(), android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            new AlertDialog.Builder(getContext(), Ui.dialog())
                     .setTitle("Clear cookies and site data?")
-                    .setMessage("You'll be signed out of every site.")
+                    .setMessage("You'll be signed out of every site. Tabs and history stay.")
                     .setPositiveButton("Clear", (d, w) -> b.clearSiteData())
                     .setNegativeButton("Cancel", null)
                     .show();
@@ -568,17 +584,25 @@ final class Start extends FrameLayout {
                 + "which app to use.");
     }
 
-    int background() { return Math.floorMod(sp.getInt("start_background", 0), BACKGROUNDS.length); }
+    int background() { return Math.floorMod(sp.getInt("start_bg", 0), BACKGROUNDS.length); }
 
     private void fillLook() {
-        backToSettings("Home screen");
-        row(0, "Background", BACKGROUNDS[background()], false, () -> {
-            sp.edit().putInt("start_background", background() + 1).apply();
+        backToSettings("Appearance");
+        choice("Theme", new String[]{"Dark", "Light"}, Ui.light ? 1 : 0, i -> b.setLight(i == 1));
+        choice("Background", BACKGROUNDS, background(), i -> {
+            sp.edit().putInt("start_bg", i).apply();
             loadPhoto();
-            show(Page.LOOK);
         });
-        note("TV Home photo uses the picture on BeeshTV Launcher's Home. Frosted blurs it the way the "
-                + "launcher blurs its panels.");
+        note("Frosted TV photo blurs the picture on BeeshTV Launcher's Home the way the launcher blurs "
+                + "its panels.");
+    }
+
+    private void fillInput() {
+        backToSettings("Input");
+        choice("Input device", BrowserActivity.INPUTS, b.input(), b::setInput);
+        note("A Bluetooth or USB mouse works as it does on a computer: its own pointer, clicks and scroll "
+                + "wheel. Automatic hides the remote's pointer while you use the mouse and brings it back "
+                + "when you press an arrow. Mouse makes the arrows scroll the page instead.");
     }
 
     String updateSummary() {
@@ -604,8 +628,7 @@ final class Start extends FrameLayout {
             row(R.drawable.ic_update, "Download and install " + u.latest(), null, true, b::installUpdate);
         }
         row(0, "Check for updates", null, false, () -> u.check(true));
-        row(0, "Download updates automatically", u.autoDownload() ? "On" : "Off", false,
-                () -> { u.setAutoDownload(!u.autoDownload()); show(Page.UPDATES); });
+        toggle("Download updates automatically", u.autoDownload(), u::setAutoDownload);
         if (!u.canInstall()) row(0, "Allow installing updates", "Allow", true,
                 () -> getContext().startActivity(u.installPermissionScreen()));
         note("New versions come from github.com/" + Updater.REPO + ". The TV asks you to confirm before "
@@ -750,6 +773,109 @@ final class Start extends FrameLayout {
         list.addView(r, lp(-1, dp(48), 0, 0, 0, dp(2)));
     }
 
+    /** Which dropdown is open on this page, by its label. */
+    private String open;
+
+    /**
+     * A setting with a few choices: the current one in a small box with an arrow, like a dropdown.
+     * Clicking opens the choices underneath, the current one ticked.
+     */
+    private void choice(String label, String[] options, int current, java.util.function.IntConsumer pick) {
+        Context c = getContext();
+        boolean expanded = label.equals(open);
+        LinearLayout group = column(c);
+        if (expanded) {
+            group.setBackground(Ui.frost(c, 12));
+            group.setPadding(0, 0, 0, dp(6));
+        }
+        LinearLayout r = new LinearLayout(c);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(12), 0, dp(8), 0);
+        r.setBackground(Ui.surface(c, 10, 0));
+        r.setClickable(true);
+        r.setOnClickListener(v -> { open = expanded ? null : label; show(page); });
+        TextView l = Ui.text(c, 15, 400, Ui.TEXT);
+        l.setText(label);
+        r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout box = new LinearLayout(c);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        box.setPadding(dp(12), 0, dp(8), 0);
+        box.setBackground(Ui.frost(c, 8));
+        TextView v = Ui.text(c, 14, 500, Ui.TEXT);
+        v.setText(options[Math.max(0, Math.min(current, options.length - 1))]);
+        box.addView(v);
+        ImageView arrow = new ImageView(c);
+        arrow.setImageResource(R.drawable.ic_expand);
+        arrow.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
+        arrow.setRotation(expanded ? 180 : 0);
+        box.addView(arrow, lp(dp(16), dp(16), dp(8), 0, 0, 0));
+        r.addView(box, lp(-2, dp(32), dp(16), 0, 0, 0));
+        group.addView(r, lp(-1, dp(48), 0, 0, 0, 0));
+        if (expanded) {
+            for (int i = 0; i < options.length; i++) {
+                int index = i;
+                LinearLayout o = new LinearLayout(c);
+                o.setGravity(Gravity.CENTER_VERTICAL);
+                o.setPadding(dp(24), 0, dp(16), 0);
+                o.setBackground(Ui.surface(c, 8, 0));
+                o.setClickable(true);
+                o.setOnClickListener(x -> { open = null; pick.accept(index); show(page); });
+                TextView t = Ui.text(c, 15, 400, i == current ? Ui.TEXT : Ui.TEXT_2);
+                t.setText(options[i]);
+                o.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+                if (i == current) {
+                    ImageView tick = new ImageView(c);
+                    tick.setImageResource(R.drawable.ic_check);
+                    tick.setImageTintList(ColorStateList.valueOf(Ui.TEXT));
+                    o.addView(tick, lp(dp(18), dp(18), 0, 0, 0, 0));
+                }
+                group.addView(o, lp(-1, dp(44), dp(6), 0, dp(6), 0));
+            }
+        }
+        list.addView(group, lp(-1, -2, 0, 0, 0, dp(2)));
+    }
+
+    /** An on/off setting with a switch. */
+    private void toggle(String label, boolean on, java.util.function.Consumer<Boolean> set) {
+        Context c = getContext();
+        LinearLayout r = new LinearLayout(c);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(12), 0, dp(12), 0);
+        r.setBackground(Ui.surface(c, 10, 0));
+        r.setClickable(true);
+        r.setOnClickListener(v -> { set.accept(!on); show(page); });
+        TextView l = Ui.text(c, 15, 400, Ui.TEXT);
+        l.setText(label);
+        r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        r.addView(new Switch(c, on), lp(dp(40), dp(22), dp(16), 0, 0, 0));
+        list.addView(r, lp(-1, dp(48), 0, 0, 0, dp(2)));
+    }
+
+    /** A small track and knob: filled with the text colour when on, a hairline when off. */
+    static final class Switch extends View {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final boolean on;
+
+        Switch(Context c, boolean on) { super(c); this.on = on; }
+
+        @Override protected void onDraw(android.graphics.Canvas cv) {
+            float w = getWidth(), h = getHeight(), r = h / 2f, pad = h * 0.14f;
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setColor(on ? Ui.TEXT : Ui.HOVER);
+            cv.drawRoundRect(0, 0, w, h, r, r, paint);
+            if (!on) {
+                paint.setStyle(android.graphics.Paint.Style.STROKE);
+                paint.setStrokeWidth(Math.max(1, h * 0.05f));
+                paint.setColor(Ui.HAIRLINE);
+                cv.drawRoundRect(0, 0, w, h, r, r, paint);
+                paint.setStyle(android.graphics.Paint.Style.FILL);
+            }
+            paint.setColor(on ? Ui.BG : Ui.TEXT_2);
+            float knob = r - pad;
+            cv.drawCircle(on ? w - r : r, r, knob, paint);
+        }
+    }
+
     /** A row with a name and a quiet line under it, for tabs and history. */
     private LinearLayout twoLine(String top, String bottom, boolean current) {
         Context c = getContext();
@@ -804,17 +930,16 @@ final class Start extends FrameLayout {
     // ---------------------------------------------------------------- background, clock, icons
 
     private void loadPhoto() {
-        int bg = background();
-        if (bg == 0) {
+        if (background() == 0) {
             photo.setImageDrawable(null);
             shade.setBackgroundColor(0);
             return;
         }
-        // Darkened so white text reads on any photo.
-        shade.setBackgroundColor(bg == 2 ? 0x73000000 : 0x59000000);
+        // A veil over the photo so the text on it reads: dark, or pale in light mode.
+        shade.setBackgroundColor(Ui.light ? 0xA6F5F2F1 : 0x73000000);
         io.execute(() -> {
-            Bitmap p = Backdrop.wallpaper(getContext(), bg == 2);
-            main.post(() -> { if (background() == bg) photo.setImageBitmap(p); });
+            Bitmap p = Backdrop.wallpaper(getContext(), true);
+            main.post(() -> { if (background() != 0) photo.setImageBitmap(p); });
         });
     }
 
@@ -839,11 +964,17 @@ final class Start extends FrameLayout {
 
     @Override protected void onDetachedFromWindow() { removeCallbacks(tick); super.onDetachedFromWindow(); }
 
+    /** Site icons in memory, and their own threads so one slow site doesn't hold up the rest. */
+    private static final java.util.Map<String, Bitmap> ICONS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final ExecutorService ICON_IO = Executors.newFixedThreadPool(4);
+
     /** The site's own icon, fetched once and kept. */
     void favicon(String host, ImageView into) {
         if (host == null) return;
+        Bitmap known = ICONS.get(host);
+        if (known != null) { into.setImageBitmap(known); return; }
         File f = new File(new File(getContext().getFilesDir(), "icons"), host + ".png");
-        io.execute(() -> {
+        ICON_IO.execute(() -> {
             try {
                 if (!f.exists()) {
                     File dir = f.getParentFile();
@@ -860,7 +991,10 @@ final class Start extends FrameLayout {
                     }
                 }
                 Bitmap bm = BitmapFactory.decodeFile(f.getPath());
-                if (bm != null) main.post(() -> into.setImageBitmap(bm));
+                if (bm != null) {
+                    ICONS.put(host, bm);
+                    main.post(() -> into.setImageBitmap(bm));
+                }
                 else f.delete();
             } catch (Exception e) {
                 f.delete();

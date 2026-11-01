@@ -22,20 +22,45 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * The browser's look: a living room at night. Near-black neutrals with a trace of red in them, white
- * text in three strengths, frosted surfaces (a faint white fill and a hairline edge, no glow), and
+ * The browser's look: a living room at night (or, in light mode, by day). Neutrals with a trace of red
+ * in them, text in three strengths, frosted surfaces (a faint fill and a hairline edge, no glow), and
  * one accent, the red of a TV's standby light, kept for the current item and the loading line.
+ *
+ * The colours aren't constants: theme() sets them for dark or light before any view is made.
  */
 final class Ui {
     private Ui() { }
 
+    static boolean light;
     // Neutral ramp.
-    static final int BG = 0xFF0B0A0A, SURFACE = 0xFF151313;
-    static final int TEXT = 0xFFF4F1F0, TEXT_2 = 0xB3F4F1F0, TEXT_3 = 0x73F4F1F0;
-    /** Hairline borders and frosted fills, as fractions of white. */
-    static final int HAIRLINE = 0x1AFFFFFF, FROST = 0x0FFFFFFF, HOVER = 0x1FFFFFFF, SELECTED = 0x17FFFFFF;
+    static int BG, SURFACE, TEXT, TEXT_2, TEXT_3;
+    /** Hairline borders and frosted fills, as fractions of the text colour. */
+    static int HAIRLINE, FROST, HOVER, SELECTED;
     /** The standby light. */
     static final int RED = 0xFFE5484D;
+
+    static { theme(false); }
+
+    static void theme(boolean isLight) {
+        light = isLight;
+        if (light) {
+            BG = 0xFFF5F2F1; SURFACE = 0xFFFFFFFF;
+            TEXT = 0xFF1C1717; TEXT_2 = 0xB31C1717; TEXT_3 = 0x7A1C1717;
+            HAIRLINE = 0x1F000000; FROST = 0x0D000000; HOVER = 0x17000000; SELECTED = 0x10000000;
+        } else {
+            BG = 0xFF0B0A0A; SURFACE = 0xFF151313;
+            TEXT = 0xFFF4F1F0; TEXT_2 = 0xB3F4F1F0; TEXT_3 = 0x73F4F1F0;
+            HAIRLINE = 0x1AFFFFFF; FROST = 0x0FFFFFFF; HOVER = 0x1FFFFFFF; SELECTED = 0x17FFFFFF;
+        }
+    }
+
+    /** Dialogs follow the theme. */
+    static int dialog() {
+        return light ? android.R.style.Theme_DeviceDefault_Light_Dialog_Alert : android.R.style.Theme_DeviceDefault_Dialog_Alert;
+    }
+
+    /** "#rrggbb" of a colour, for the pages the browser writes itself. */
+    static String css(int c) { return String.format("#%06x", c & 0xFFFFFF); }
 
     private static final Map<Integer, Typeface> FACES = new HashMap<>();
 
@@ -71,9 +96,9 @@ final class Ui {
         return t;
     }
 
-    /** White text over a photo gets a soft shadow so it holds up on bright skies. */
+    /** White text over a photo gets a soft shadow so it holds up on bright skies (dark mode only). */
     static TextView onPhoto(TextView t) {
-        t.setShadowLayer(dp(t.getContext(), 8), 0, dp(t.getContext(), 1), 0x80000000);
+        if (!light) t.setShadowLayer(dp(t.getContext(), 8), 0, dp(t.getContext(), 1), 0x80000000);
         return t;
     }
 
@@ -118,14 +143,15 @@ final class Ui {
         return g;
     }
 
-    /** The plain background: near black, with the faint red of a standby light low in one corner. */
+    /** The plain background, with the faint red of a standby light low in one corner. */
     static final class Night extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         @Override protected void onBoundsChange(Rect b) {
             float r = Math.max(b.width(), b.height()) * 0.7f;
             paint.setShader(new RadialGradient(b.left + b.width() * 0.08f, b.bottom + b.height() * 0.1f, r,
-                    new int[]{0x33B8262E, 0x14B8262E, 0x00B8262E}, new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
+                    light ? new int[]{0x1FE5484D, 0x0AE5484D, 0x00E5484D} : new int[]{0x33B8262E, 0x14B8262E, 0x00B8262E},
+                    new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
         }
 
         @Override public void draw(Canvas c) {
