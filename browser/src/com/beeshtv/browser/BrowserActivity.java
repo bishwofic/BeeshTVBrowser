@@ -1252,7 +1252,7 @@ public class BrowserActivity extends Activity {
             root.draw(c);
             if (k) keyboard.setVisibility(View.VISIBLE);
             if (cur) cursor.setVisibility(View.VISIBLE);
-            android.graphics.Bitmap out = Backdrop.blur(small, 0.25f);
+            android.graphics.Bitmap out = Backdrop.blur(small, 0.75f);
             small.recycle();
             return out;
         } catch (RuntimeException | OutOfMemoryError e) {

@@ -1,15 +1,15 @@
-# BeeshTV Browser
+# BEESH Browser
 
 A web browser made for the TV remote. A pointer moves over everything with the arrow keys, like a
 mouse: OK clicks, pushing past an edge scrolls. The bar above the page has back, forward, reload, home,
 the address, voice search, ad blocking, desktop site and zoom.
 
 Built on the TV's own Android System WebView (Chromium), so pages render like they do in Chrome. It
-pairs with [BeeshTV Launcher](https://github.com/bishwofic/BeeshTVLauncher) but works on its own.
+pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but works on its own.
 
 ## Features
 
-- **A home page** on the same photo as your TV's Home (from BeeshTV Launcher, blurred the way the
+- **A home page** on the same photo as your TV's Home (from BEESH Launcher, blurred the way the
   launcher blurs it), with the weather and time, a big search box and your shortcuts (hold OK on one
   to remove it). Settings can turn the photo "off", for a heavily frosted version of it instead.
 - **A pointer for the D-pad.** It starts slow for precise aim and speeds up while you hold a
@@ -21,7 +21,7 @@ pairs with [BeeshTV Launcher](https://github.com/bishwofic/BeeshTVLauncher) but 
 - **DNS protection**, AdGuard by default: every site is checked with the DNS service you pick (AdGuard,
   AdGuard Family, Cloudflare, Cloudflare Family, OpenDNS, OpenDNS FamilyShield, Quad9, or off) over
   encrypted DNS, and what it blocks doesn't load. Android doesn't let an app change the DNS server
-  the page engine uses, so the TV's own DNS still does the lookups (`install.sh` in BeeshTV Launcher
+  the page engine uses, so the TV's own DNS still does the lookups (`install.sh` in BEESH Launcher
   sets that to AdGuard too).
 - **Ad and tracker blocking**, on by default. It starts with a built-in list and switches to
   [Steven Black's hosts list](https://github.com/StevenBlack/hosts) (about 80,000 ad and malware hosts),
@@ -35,8 +35,8 @@ pairs with [BeeshTV Launcher](https://github.com/bishwofic/BeeshTVLauncher) but 
 - **Desktop site** per site, or for every site, when the phone version of a site is too cut down.
 - **Zoom** per site, from 50% to 200%, remembered for next time.
 - **Full-screen video** with Back to leave it.
-- **Opens web links from other apps**: choose BeeshTV Browser and Always when the TV asks.
-- **Updates itself** from this repo's GitHub releases, like BeeshTV Launcher.
+- **Opens web links from other apps**: choose BEESH Browser and Always when the TV asks.
+- **Updates itself** from this repo's GitHub releases, like BEESH Launcher.
 - Small: about 500 KB, since the page engine is the TV's own.
 
 ## Using it

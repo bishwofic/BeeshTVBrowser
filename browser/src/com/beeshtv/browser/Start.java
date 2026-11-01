@@ -677,7 +677,7 @@ final class Start extends FrameLayout {
         }
     }
 
-    /** Laid out the same as BeeshTV Launcher's Updates page. */
+    /** Laid out the same as BEESH Launcher's Updates page. */
     private void fillUpdates() {
         backToSettings("Updates");
         Updater u = b.updater();
@@ -763,7 +763,7 @@ final class Start extends FrameLayout {
         list.addView(r, lp(-1, dp(44), 0, 0, 0, 0));
     }
 
-    /** Laid out the same as BeeshTV Launcher's About page. */
+    /** Laid out the same as BEESH Launcher's About page. */
     private void fillAbout() {
         title("About", null);
         LinearLayout who = new LinearLayout(getContext());

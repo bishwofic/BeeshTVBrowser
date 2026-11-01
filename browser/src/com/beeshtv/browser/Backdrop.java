@@ -9,7 +9,7 @@ import android.net.Uri;
 import java.io.InputStream;
 
 /**
- * The home page's photo and weather, borrowed from BeeshTV Launcher (its ShareProvider), so the
+ * The home page's photo and weather, borrowed from BEESH Launcher (its ShareProvider), so the
  * browser opens on the same picture as the TV's Home. The two blurs are the launcher's own: the light
  * one it lays over the photo on Home, and the heavy one behind its frosted panels.
  */
@@ -26,7 +26,7 @@ final class Backdrop {
         try (InputStream in = c.getContentResolver().openInputStream(SCREEN)) {
             Bitmap small = in == null ? null : BitmapFactory.decodeStream(in);
             if (small != null) {
-                Bitmap out = blur(small, 0f);
+                Bitmap out = blur(small, 0.5f);
                 small.recycle();
                 return out;
             }
@@ -59,10 +59,10 @@ final class Backdrop {
             Bitmap soft = soften(full);
             full.recycle();
             if (!heavy) return soft;
-            // Half again as sharp as the launcher's own frost: a softer blur, the photo still recognisable.
-            Bitmap small = Bitmap.createScaledBitmap(soft, soft.getWidth() / 2, soft.getHeight() / 2, true);
+            // Frosted deep: the photo reads as colour and light, not detail.
+            Bitmap small = Bitmap.createScaledBitmap(soft, soft.getWidth() / 4, soft.getHeight() / 4, true);
             soft.recycle();
-            Bitmap out = blur(small, 0f);
+            Bitmap out = blur(small, 0.5f);
             small.recycle();
             return out;
         } catch (Exception | OutOfMemoryError e) {
@@ -96,7 +96,7 @@ final class Backdrop {
         return R.drawable.ic_w_rain;
     }
 
-    // ---- The launcher's blurs (BeeshTV Launcher, Ui.java), kept identical so both apps look the same.
+    // ---- The launcher's blurs (BEESH Launcher, Ui.java), kept identical so both apps look the same.
 
     /** A light blur over the whole photo, at half size. */
     static Bitmap soften(Bitmap full) {

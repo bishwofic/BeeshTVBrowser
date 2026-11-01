@@ -12,5 +12,5 @@ if gh release view "v$VERSION" >/dev/null 2>&1; then
 fi
 browser/build.sh
 gh release create "v$VERSION" "dist/BeeshTV-Browser-$VERSION.apk" \
-  --title "BeeshTV Browser $VERSION" --generate-notes
+  --title "BEESH Browser $VERSION" --generate-notes
 echo "Released v$VERSION. TVs pick it up within six hours, or at once from Settings → Updates."
