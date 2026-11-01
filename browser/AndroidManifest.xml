@@ -5,6 +5,8 @@
     android:versionName="1.0">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Voice typing, through the remote's microphone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Installs new releases from GitHub (the system still asks to confirm). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -22,7 +24,7 @@
     </queries>
 
     <application
-        android:label="BeeshTV Browser"
+        android:label="BEESH Browser"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:banner="@drawable/banner"

@@ -69,8 +69,15 @@
   //    DNS protection, and sites where ads are allowed). Requests the page makes from script would
   //    otherwise "succeed" with the browser's empty answer.
   if (window.BeeshTVInput && BeeshTVInput.blocks) {
+    // One answer per host, so a stream's segment requests don't each wait on the browser.
+    var answers = {};
     var blocked = function (url) {
-      try { return BeeshTVInput.blocks(new URL(url, location.href).href); } catch (e) { return false; }
+      try {
+        var u = new URL(url, location.href);
+        if (u.hostname === location.hostname) return false;
+        if (!(u.hostname in answers)) answers[u.hostname] = BeeshTVInput.blocks(u.href);
+        return answers[u.hostname];
+      } catch (e) { return false; }
     };
     var realFetch = window.fetch;
     if (realFetch) window.fetch = function (input, init) {
@@ -130,6 +137,71 @@
     setInterval(function () { if (paused.length || anyPlaying()) settle(); }, 3000);
   }
 
-  // 6. Read as a regular browser to players that check.
+  // 6. Desktop sites: lay the page out for a laptop screen, not the TV's narrow phone-style width.
+  if (window.top === window && window.BeeshTVInput && BeeshTVInput.desktop && BeeshTVInput.desktop(location.hostname)) {
+    var wide = function () {
+      var m = document.querySelector('meta[name="viewport"]');
+      if (!m) {
+        if (!document.head) return;
+        m = document.createElement('meta');
+        m.name = 'viewport';
+        document.head.appendChild(m);
+      }
+      // A 1280-wide laptop layout, zoomed to fill the TV's width.
+      var want = 'width=1280,initial-scale=' + (Math.round(screen.width / 1280 * 1000) / 1000);
+      if (m.content !== want) m.content = want;
+    };
+    document.addEventListener('DOMContentLoaded', wide);
+    window.addEventListener('load', wide);
+    setTimeout(wide, 1500);
+  }
+
+  // 7. YouTube's own ads (the ones inside videos), as Brave and uBlock Origin do it: the player is
+  //    given its data with the ad schedule taken out, so no ad is ever set up. If one still starts, it
+  //    is skipped to its end, muted, and the skip button pressed. Ad slots on the page are hidden.
+  //    Off when ad blocking is off, or ads are allowed on YouTube.
+  if (/(^|\.)youtube(-nocookie)?\.com$/.test(location.hostname) && window.BeeshTVInput && BeeshTVInput.adsOn
+      && BeeshTVInput.adsOn(location.hostname)) {
+    var AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
+    var prune = function (o) {
+      if (!o || typeof o !== 'object') return o;
+      AD_KEYS.forEach(function (k) { if (k in o) delete o[k]; });
+      if (o.playerResponse) prune(o.playerResponse);
+      if (Array.isArray(o)) o.forEach(prune);
+      return o;
+    };
+    var parse = JSON.parse;
+    JSON.parse = function () { return prune(parse.apply(this, arguments)); };
+    var json = Response.prototype.json;
+    Response.prototype.json = function () { return json.apply(this, arguments).then(prune); };
+    ['ytInitialPlayerResponse', 'ytInitialData'].forEach(function (name) {
+      var held;
+      try {
+        Object.defineProperty(window, name, {
+          configurable: true,
+          get: function () { return held; },
+          set: function (v) { held = prune(v); }
+        });
+      } catch (e) {}
+    });
+    var hide = document.createElement('style');
+    hide.textContent = '.ytp-ad-module,.ytp-ad-overlay-container,.ytp-ad-image-overlay,#player-ads,' +
+      'ytd-ad-slot-renderer,ytd-display-ad-renderer,ytd-promoted-sparkles-web-renderer,ytd-in-feed-ad-layout-renderer,' +
+      'ytd-banner-promo-renderer,ytd-statement-banner-renderer,ytm-promoted-sparkles-web-renderer,' +
+      'ytm-companion-ad-renderer,ytm-ad-slot-renderer,ytm-promoted-video-renderer,.ytm-promoted-sparkles-text-search-renderer' +
+      '{display:none!important}';
+    var addHide = function () { (document.head || document.documentElement).appendChild(hide); };
+    if (document.documentElement) addHide(); else document.addEventListener('DOMContentLoaded', addHide);
+    setInterval(function () {
+      var player = document.querySelector('.ad-showing');
+      if (!player) return;
+      var v = player.querySelector('video');
+      if (v) { v.muted = true; if (isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration; }
+      var skip = document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button');
+      if (skip) skip.click();
+    }, 300);
+  }
+
+  // 8. Read as a regular browser to players that check.
   try { Object.defineProperty(navigator, 'webdriver', { get: function () { return false; } }); } catch (e) {}
 })();

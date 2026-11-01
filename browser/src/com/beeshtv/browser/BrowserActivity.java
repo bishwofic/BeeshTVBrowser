@@ -81,7 +81,7 @@ public class BrowserActivity extends Activity {
     /** Text size in TV mode, as a percentage: readable from the couch without breaking layouts. */
     static final int TV_TEXT = 115;
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
-    static final int REQ_VOICE = 7;
+    static final int REQ_VOICE = 7, REQ_MIC = 8;
     /** Each open page takes memory on a TV that has little; more than this and pages start reloading. */
     static final int MAX_TABS = 6;
     /** Hover is passed to the page at most this often while the pointer moves (players react to every move). */
@@ -117,6 +117,11 @@ public class BrowserActivity extends Activity {
     private TextView tip;
     private Start start;
     private Keyboard keyboard;
+    private Voice voice;
+    /** What to do with the words once the microphone is allowed. */
+    private java.util.function.Consumer<String> pendingVoice;
+    /** The TV's own client hints (mobile, Android), and desktop ones (not mobile, Linux). */
+    private androidx.webkit.UserAgentMetadata tvHints, desktopHints;
     /** A keyboard with letters was typed on; ours stays away until it's disconnected. */
     private boolean physicalKeyboard;
     private CursorView cursor;
@@ -195,6 +200,13 @@ public class BrowserActivity extends Activity {
         });
         // Docked to the bottom edge, the full width of the screen.
         root.addView(keyboard, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        voice = new Voice(this);
+        root.addView(voice, new FrameLayout.LayoutParams(-1, -1));
+        keyboard.setSize(keyboardSize());
+        keyboard.setMic(() -> {
+            Keyboard.Target t = keyboardTarget;
+            listen(text -> { if (t != null) t.type(text); });
+        });
         int c = CursorView.sizePx(this);
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         // A keyboard going away (unplugged, switched off) brings ours back.
@@ -254,6 +266,7 @@ public class BrowserActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        voice.release();
         for (Tab t : tabs) if (t.web != null) t.web.destroy();
         super.onDestroy();
     }
@@ -388,6 +401,17 @@ public class BrowserActivity extends Activity {
         InputBridge(Tab t) { tab = t; }
         @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
         @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
+        /** Asked by YouTube pages as they start: block its in-video ads? */
+        @JavascriptInterface public boolean adsOn(String host) {
+            String h = host == null ? null : History.hostOf("https://" + host);
+            return adblock.enabled() && !adsAllowed(h) && !adsAllowed("youtube.com");
+        }
+
+        /** Asked by the page as it starts: should it lay out like a computer screen? */
+        @JavascriptInterface public boolean desktop(String host) {
+            return desktopFor(host == null ? null : host.startsWith("www.") ? host.substring(4) : host);
+        }
+
         /** Asked by the page before it fetches: would this be blocked here? Answers at once. */
         @JavascriptInterface public boolean blocks(String url) {
             String host = Uri.parse(url).getHost();
@@ -459,6 +483,7 @@ public class BrowserActivity extends Activity {
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 t.host = hostOf(url);
                 t.blocked.set(0);
+                if (t == tab) hideTip();
                 if (t == tab) refreshBar();
             }
 
@@ -713,6 +738,16 @@ public class BrowserActivity extends Activity {
         String want = desktop ? desktopUA : mobileUA;
         WebSettings s = w.getSettings();
         s.setTextZoom(desktop ? 100 : TV_TEXT);
+        // Chrome also tells sites "mobile, Android" in separate hints; desktop has to change those too.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            if (tvHints == null) {
+                tvHints = WebSettingsCompat.getUserAgentMetadata(s);
+                desktopHints = new androidx.webkit.UserAgentMetadata.Builder(tvHints)
+                        .setMobile(false).setPlatform("Linux").setPlatformVersion("").setModel("")
+                        .setArchitecture("x86").setBitness(64).build();
+            }
+            WebSettingsCompat.setUserAgentMetadata(s, desktop ? desktopHints : tvHints);
+        }
         if (want.equals(s.getUserAgentString())) return false;
         s.setUserAgentString(want);
         return true;
@@ -853,7 +888,7 @@ public class BrowserActivity extends Activity {
         View hit = null;
         if (start.getVisibility() == View.VISIBLE) hit = Ui.hit(start, x, y);
         else if (y < pages.getTop()) hit = Ui.hit(bar, x, y);
-        else hoverPage();
+        else { hoverPage(); hideTip(); }
         if (hit == hovered) return;
         if (hovered != null) hovered.setHovered(false);
         if (hit != null) hit.setHovered(true);
@@ -957,6 +992,10 @@ public class BrowserActivity extends Activity {
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
         boolean onStart = start.getVisibility() == View.VISIBLE;
 
+        if (voice.listening()) {
+            if (code == KeyEvent.KEYCODE_BACK && !down) voice.stop();
+            return true;
+        }
         if (fullscreen != null) {
             if (code == KeyEvent.KEYCODE_BACK) { if (!down) web.evaluateJavascript("document.exitFullscreen()", null); return true; }
             return super.dispatchKeyEvent(e);
@@ -1052,14 +1091,54 @@ public class BrowserActivity extends Activity {
     void attachKeyboard(EditText field, Runnable onLeave) {
         field.setShowSoftInputOnFocus(false);
         field.setOnFocusChangeListener((v, has) -> {
-            if (has && !physicalKeyboard) keyboard.show(fieldTarget(field));
+            if (has && !physicalKeyboard) showKeyboard(fieldTarget(field));
             if (!has) {
                 if (keyboard.isOpen() && keyboard.getTag() == field) keyboard.close();
                 if (onLeave != null) onLeave.run();
             }
         });
         // Clicking a field that already has focus brings the keyboard back after it was put away.
-        field.setOnClickListener(v -> { if (!physicalKeyboard && !keyboard.isOpen()) keyboard.show(fieldTarget(field)); });
+        field.setOnClickListener(v -> { if (!physicalKeyboard && !keyboard.isOpen()) showKeyboard(fieldTarget(field)); });
+    }
+
+    private Keyboard.Target keyboardTarget;
+
+    /** Our keyboard, frosted over whatever is on screen as it opens. */
+    private void showKeyboard(Keyboard.Target t) {
+        if (!keyboard.isOpen()) keyboard.setBackdrop(frostedScreen());
+        keyboardTarget = t;
+        keyboard.show(t);
+    }
+
+    int keyboardSize() { return Math.floorMod(sp.getInt("keyboard_size", 1), Keyboard.SIZES.length); }
+
+    void setKeyboardSize(int i) {
+        sp.edit().putInt("keyboard_size", i).apply();
+        keyboard.setSize(i);
+    }
+
+    /**
+     * A blurred, small picture of the screen as it is now, for frosted surfaces to show behind them.
+     * The page is drawn in software for this one picture; video and other surfaces come out dark.
+     */
+    android.graphics.Bitmap frostedScreen() {
+        int w = Math.max(1, root.getWidth() / 6), h = Math.max(1, root.getHeight() / 6);
+        try {
+            android.graphics.Bitmap small = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(small);
+            c.scale(w / (float) root.getWidth(), h / (float) root.getHeight());
+            boolean k = keyboard.getVisibility() == View.VISIBLE, cur = cursor.getVisibility() == View.VISIBLE;
+            keyboard.setVisibility(View.INVISIBLE);
+            cursor.setVisibility(View.INVISIBLE);
+            root.draw(c);
+            if (k) keyboard.setVisibility(View.VISIBLE);
+            if (cur) cursor.setVisibility(View.VISIBLE);
+            android.graphics.Bitmap out = Backdrop.blur(small, 0.5f);
+            small.recycle();
+            return out;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            return null;
+        }
     }
 
     private Keyboard.Target fieldTarget(EditText f) {
@@ -1097,7 +1176,7 @@ public class BrowserActivity extends Activity {
             return;
         }
         if (physicalKeyboard || start.getVisibility() == View.VISIBLE || fullscreen != null) return;
-        keyboard.show(pageTarget);
+        showKeyboard(pageTarget);
         keyboard.setTag(pageTarget);
         // Keep the field in view above the keyboard.
         main.postDelayed(() -> web.evaluateJavascript("(function(e){if(e&&e.scrollIntoView)e.scrollIntoView({block:'center'})})(document.activeElement)", null), 260);
@@ -1304,7 +1383,7 @@ public class BrowserActivity extends Activity {
         exitBar();
         keyboard.close();
         hideTip();
-        start.sheet(true);
+        start.sheet(true, frostedScreen());
         start.setVisibility(View.VISIBLE);
         start.setAlpha(1f);
         start.show(p);
@@ -1323,7 +1402,38 @@ public class BrowserActivity extends Activity {
         refreshBar();
     }
 
-    void voice() {
+    /** Voice search from the bar or Home: what you say is opened or searched. */
+    void voice() { listen(text -> load(searchOrUrl(text))); }
+
+    /** Listens with our own bar (Voice), asking for the microphone the first time. */
+    void listen(java.util.function.Consumer<String> then) {
+        if (!Voice.available(this)) { voiceScreen(); return; }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingVoice = then;
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+            return;
+        }
+        voice.listen(frostedScreen(), voiceBottom(), then);
+    }
+
+    private int voiceBottom() { return keyboard.isOpen() ? keyboard.getHeight() + dp(16) : dp(32); }
+
+    @Override
+    public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(req, perms, results);
+        if (req != REQ_MIC) return;
+        java.util.function.Consumer<String> then = pendingVoice;
+        pendingVoice = null;
+        if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED && then != null) {
+            // Once the permission screen has gone and the window is ours again.
+            main.postDelayed(() -> voice.listen(frostedScreen(), voiceBottom(), then), 400);
+        } else {
+            toast("Allow the microphone to type by voice");
+        }
+    }
+
+    /** Only when the TV has no speech recogniser for apps: its own voice screen. */
+    private void voiceScreen() {
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH)
                 .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a search or a website");
@@ -1354,7 +1464,7 @@ public class BrowserActivity extends Activity {
 
     void installUpdate() {
         if (!updater.canInstall()) {
-            toast("Allow BeeshTV Browser to install apps, then press Back and choose Update again");
+            toast("Allow BEESH Browser to install apps, then press Back and choose Update again");
             startActivity(updater.installPermissionScreen());
             return;
         }

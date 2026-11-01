@@ -69,7 +69,7 @@ final class Start extends FrameLayout {
     private final EditText search;
     private final LinearLayout sites;
     private final View side, time, scrim;
-    private final FrameLayout card;
+    private final Frost card;
     /** Open over a website as a card on the right, instead of the whole screen. */
     private boolean sheet;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -98,10 +98,11 @@ final class Start extends FrameLayout {
         brand.setPadding(dp(8), 0, 0, 0);
         ImageView mark = new ImageView(c);
         mark.setImageResource(R.drawable.mark);
+        mark.setImageTintList(ColorStateList.valueOf(Ui.TEXT));
         brand.addView(mark, lp(dp(28), dp(28), 0, 0, dp(10), 0));
         LinearLayout names = column(c);
         TextView n1 = Ui.text(c, 16, 500, Ui.TEXT);
-        n1.setText("BeeshTV");
+        n1.setText("BEESH");
         TextView n2 = Ui.text(c, 13, 400, Ui.TEXT_2);
         n2.setText("Browser");
         names.addView(n1, lp(-2, -2, 0, 0, 0, 0));
@@ -204,16 +205,15 @@ final class Start extends FrameLayout {
 
         // Over a website: the page stays in view, dimmed, with the card on the right half.
         scrim = new View(c);
-        scrim.setBackgroundColor(Ui.light ? 0x33000000 : 0x73000000);
+        scrim.setBackgroundColor(Ui.light ? 0x1F000000 : 0x40000000);
         scrim.setClickable(true);
         scrim.setOnClickListener(v -> b.closeSheet());
         scrim.setVisibility(GONE);
         addView(scrim, new LayoutParams(-1, -1));
-        card = new FrameLayout(c);
-        GradientDrawable cb = new GradientDrawable();
-        cb.setCornerRadius(dp(20));
-        cb.setColor(Ui.SURFACE);
-        card.setBackground(cb);
+        // Frosted: the website shows through, blurred, where the card sits.
+        card = new Frost(c);
+        float cr = dp(22);
+        card.corners(cr, cr, cr, cr);
         card.setElevation(dp(16));
         card.setClickable(true);
         card.setVisibility(GONE);
@@ -226,7 +226,11 @@ final class Start extends FrameLayout {
     boolean isSheet() { return sheet; }
 
     /** Full screen with the sidebar, or a card over the website (Tabs, History, Settings, Help, About). */
-    void sheet(boolean on) {
+    void sheet(boolean on) { sheet(on, null); }
+
+    /** As a card, frosted with the given blurred picture of the website behind it. */
+    void sheet(boolean on, android.graphics.Bitmap backdrop) {
+        if (on) card.setBackdrop(backdrop);
         if (sheet == on) return;
         sheet = on;
         setBackground(on ? null : new Ui.Night());
@@ -639,7 +643,7 @@ final class Start extends FrameLayout {
                     .setNegativeButton("Cancel", null)
                     .show();
         });
-        note("To open links from other apps here, choose BeeshTV Browser and Always when the TV asks "
+        note("To open links from other apps here, choose BEESH Browser and Always when the TV asks "
                 + "which app to use.");
     }
 
@@ -648,6 +652,7 @@ final class Start extends FrameLayout {
     private void fillLook() {
         backToSettings("Appearance");
         choice("Theme", new String[]{"Dark", "Light"}, Ui.light ? 1 : 0, i -> b.setLight(i == 1));
+        choice("Keyboard size", Keyboard.SIZES, b.keyboardSize(), b::setKeyboardSize);
         choice("Background", BACKGROUNDS, background(), i -> {
             sp.edit().putInt("start_bg", i).apply();
             loadPhoto();
@@ -732,10 +737,11 @@ final class Start extends FrameLayout {
         who.setGravity(Gravity.CENTER_VERTICAL);
         ImageView mark = new ImageView(getContext());
         mark.setImageResource(R.drawable.mark);
+        mark.setImageTintList(ColorStateList.valueOf(Ui.TEXT));
         who.addView(mark, lp(dp(44), dp(44), 0, 0, dp(16), 0));
         LinearLayout names = column(getContext());
         TextView n = Ui.text(getContext(), 18, 500, Ui.TEXT);
-        n.setText("BeeshTV Browser");
+        n.setText("BEESH Browser");
         TextView v = Ui.text(getContext(), 14, 400, Ui.TEXT_2);
         v.setText("Version " + b.updater().installed());
         names.addView(n, lp(-2, -2, 0, 0, 0, 0));

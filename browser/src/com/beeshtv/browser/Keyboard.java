@@ -31,35 +31,43 @@ final class Keyboard extends FrameLayout {
 
     // Special keys.
     private static final String SHIFT = "⇧", BACK = "⌫", SYMBOLS = "#+=", LETTERS = "abc", SPACE = " ", GO = "Go",
-            HIDE = "hide";
+            HIDE = "hide", MIC = "mic";
+
+    /** Sizes in Settings: key height and keyboard width in dp, and letter size in sp. */
+    static final String[] SIZES = {"Small", "Medium", "Large"};
+    private static final int[] KEY_H = {28, 32, 38}, WIDTH = {480, 560, 680}, TEXT_SP = {13, 14, 16};
+    /** The key you're on: a yellow-green that reads from across the room, dark letters on it. */
+    static final int LIME = 0xFFCFEA3C, ON_LIME = 0xFF1B1F08;
 
     private static final String[][] LETTER_ROWS = {
             {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
             {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
             {"a", "s", "d", "f", "g", "h", "j", "k", "l", BACK},
             {SHIFT, "z", "x", "c", "v", "b", "n", "m", ".", "-"},
-            {SYMBOLS, ".com", "/", SPACE, "@", HIDE, GO},
+            {SYMBOLS, ".com", "/", MIC, SPACE, "@", HIDE, GO},
     };
     private static final String[][] SYMBOL_ROWS = {
             {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
             {"!", "@", "#", "$", "%", "&", "*", "(", ")", "?"},
             {"-", "_", "=", "+", ":", ";", "'", "\"", ",", BACK},
             {"~", "`", "|", "\\", "<", ">", "[", "]", "{", "}"},
-            {LETTERS, ".com", "/", SPACE, ".", HIDE, GO},
+            {LETTERS, ".com", "/", MIC, SPACE, ".", HIDE, GO},
     };
     /** Width of a key in units, ten units to a row. */
     private static float units(String k) {
         switch (k) {
-            case SPACE: return 2.5f;
+            case SPACE: return 2f;
             case GO: return 1.5f;
-            case SYMBOLS: case LETTERS: case ".com": return 1.5f;
+            case SYMBOLS: case LETTERS: case ".com": return 1.25f;
             default: return 1f;
         }
     }
 
     private final LinearLayout rows;
+    private final Frost frost;
+    private int size = 1;
+    private Runnable mic;
     private final List<List<View>> keys = new ArrayList<>();
-    private View goKey;
     private Target target;
     private boolean symbols, shift;
     private int row = 1, col = 4;
@@ -67,29 +75,38 @@ final class Keyboard extends FrameLayout {
     Keyboard(Context c) {
         super(c);
         setClickable(true);
+        // Frosted, attached to the bottom edge: rounded only at the top.
+        frost = new Frost(c);
+        float r = dp(24);
+        frost.corners(r, r, 0, 0);
+        frost.setClickable(true);
         LinearLayout panel = new LinearLayout(c);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER_HORIZONTAL);
-        panel.setPadding(dp(16), dp(10), dp(16), dp(14));
-        GradientDrawable bg = new GradientDrawable();
-        float r = dp(20);
-        bg.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
-        bg.setColor(Ui.SURFACE);
-        panel.setBackground(bg);
-        panel.setElevation(dp(10));
-        panel.setClickable(true);
-        // A short handle, like a sheet's.
+        panel.setPadding(dp(16), dp(10), dp(16), dp(16));
         View grip = new View(c);
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(2));
-        g.setColor(Ui.HOVER);
+        g.setColor(Ui.alpha(Ui.TEXT, 0.25f));
         grip.setBackground(g);
         panel.addView(grip, lp(dp(32), dp(4), 0, 0, 0, dp(10)));
         rows = new LinearLayout(c);
         rows.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(rows, new LinearLayout.LayoutParams(Math.min(dp(560),
-                c.getResources().getDisplayMetrics().widthPixels - dp(32)), -2));
-        addView(panel, new LayoutParams(-1, -2, Gravity.BOTTOM));
+        panel.addView(rows, new LinearLayout.LayoutParams(dp(WIDTH[size]), -2));
+        frost.addView(panel, new LayoutParams(-1, -2));
+        addView(frost, new LayoutParams(-1, -2, Gravity.BOTTOM));
+        build();
+    }
+
+    /** The blurred screen behind the keyboard, taken as it opens. */
+    void setBackdrop(android.graphics.Bitmap b) { frost.setBackdrop(b); }
+
+    void setMic(Runnable r) { mic = r; }
+
+    void setSize(int s) {
+        size = Math.max(0, Math.min(SIZES.length - 1, s));
+        rows.getLayoutParams().width = Math.min(dp(WIDTH[size]), getResources().getDisplayMetrics().widthPixels - dp(32));
+        rows.requestLayout();
         build();
     }
 
@@ -159,7 +176,7 @@ final class Keyboard extends FrameLayout {
             List<View> inRow = new ArrayList<>();
             for (String k : r) {
                 View v = keyView(k);
-                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(32), units(k));
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(KEY_H[size]), units(k));
                 p.setMargins(dp(2), dp(2), dp(2), dp(2));
                 line.addView(v, p);
                 inRow.add(v);
@@ -177,37 +194,54 @@ final class Keyboard extends FrameLayout {
     private View keyView(String k) {
         Context c = getContext();
         boolean special = k.equals(SHIFT) || k.equals(BACK) || k.equals(SYMBOLS) || k.equals(LETTERS)
-                || k.equals(GO) || k.equals(".com") || k.equals(HIDE);
+                || k.equals(GO) || k.equals(".com") || k.equals(HIDE) || k.equals(MIC);
+        int ink = k.equals(GO) ? Ui.BG : special ? Ui.TEXT_2 : Ui.TEXT;
+        // Ink turns dark on the lime key.
+        ColorStateList inks = inks(k.equals(SHIFT) && shift ? Ui.TEXT : k.equals(SPACE) ? Ui.TEXT_3 : ink);
         View v;
-        if (k.equals(SHIFT) || k.equals(BACK) || k.equals(HIDE)) {
+        int icon = k.equals(SHIFT) ? R.drawable.ic_shift : k.equals(BACK) ? R.drawable.ic_backspace
+                : k.equals(HIDE) ? R.drawable.ic_keyboard_hide : k.equals(MIC) ? R.drawable.ic_mic : 0;
+        if (icon != 0) {
             ImageView i = new ImageView(c);
-            i.setImageResource(k.equals(SHIFT) ? R.drawable.ic_shift : k.equals(HIDE) ? R.drawable.ic_keyboard_hide
-                    : R.drawable.ic_backspace);
-            i.setImageTintList(ColorStateList.valueOf(k.equals(SHIFT) && shift ? Ui.TEXT : Ui.TEXT_2));
+            i.setImageResource(icon);
+            i.setImageTintList(inks);
             i.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            i.setPadding(0, dp(8), 0, dp(8));
+            int pad = dp(KEY_H[size] / 4f);
+            i.setPadding(0, pad, 0, pad);
+            i.setDuplicateParentStateEnabled(false);
             v = i;
         } else {
-            TextView t = Ui.text(c, k.length() == 1 ? 14 : 12, k.equals(GO) ? 500 : 400,
-                    k.equals(GO) ? Ui.BG : special ? Ui.TEXT_2 : Ui.TEXT);
+            TextView t = Ui.text(c, k.length() == 1 ? TEXT_SP[size] : TEXT_SP[size] - 2, k.equals(GO) ? 500 : 400, ink);
             t.setGravity(Gravity.CENTER);
             t.setText(k.equals(SPACE) ? "space" : shift && k.length() == 1 ? k.toUpperCase(Locale.ROOT) : k);
-            if (k.equals(SPACE)) t.setTextColor(Ui.TEXT_3);
+            t.setTextColor(inks);
             v = t;
         }
-        if (k.equals(GO)) {
-            goKey = v;
-            // The one filled key: the text colour, like the primary button.
-            GradientDrawable g = new GradientDrawable();
-            g.setCornerRadius(dp(8));
-            g.setColor(Ui.TEXT);
-            v.setBackground(g);
-        } else {
-            v.setBackground(Ui.surface(c, 8, special ? Ui.FROST : Ui.SELECTED));
-        }
+        int rest = k.equals(GO) ? Ui.TEXT : Ui.alpha(Ui.TEXT, special ? 0.06f : 0.11f);
+        android.graphics.drawable.StateListDrawable bg = new android.graphics.drawable.StateListDrawable();
+        bg.addState(new int[]{android.R.attr.state_activated}, keyFill(LIME));
+        bg.addState(new int[]{android.R.attr.state_hovered}, keyFill(LIME));
+        bg.addState(new int[]{android.R.attr.state_pressed}, keyFill(LIME));
+        bg.addState(new int[]{}, keyFill(rest));
+        bg.setEnterFadeDuration(70);
+        bg.setExitFadeDuration(110);
+        v.setBackground(bg);
         v.setClickable(true);
         v.setOnClickListener(x -> press(k));
         return v;
+    }
+
+    private static ColorStateList inks(int rest) {
+        return new ColorStateList(new int[][]{
+                {android.R.attr.state_activated}, {android.R.attr.state_hovered}, {android.R.attr.state_pressed}, {}},
+                new int[]{ON_LIME, ON_LIME, ON_LIME, rest});
+    }
+
+    private GradientDrawable keyFill(int color) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(8));
+        g.setColor(color);
+        return g;
     }
 
     private void press(String k) {
@@ -218,6 +252,7 @@ final class Keyboard extends FrameLayout {
             case LETTERS: symbols = false; build(); return;
             case BACK: target.backspace(); return;
             case HIDE: close(); return;
+            case MIC: if (mic != null) mic.run(); return;
             case GO: target.enter(); return;
             default:
                 target.type(shift && k.length() == 1 ? k.toUpperCase(Locale.ROOT) : k);
@@ -252,12 +287,7 @@ final class Keyboard extends FrameLayout {
         for (int r = 0; r < keys.size(); r++) {
             for (int i = 0; i < keys.get(r).size(); i++) keys.get(r).get(i).setActivated(r == row && i == col);
         }
-        // The filled Go key shows it's picked by growing a little instead.
-        if (goKey != null) {
-            float s = goKey.isActivated() ? 1.06f : 1f;
-            goKey.setScaleX(s);
-            goKey.setScaleY(s);
-        }
+
     }
 
     private int dp(float v) { return Ui.dp(getContext(), v); }
