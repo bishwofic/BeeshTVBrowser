@@ -48,7 +48,7 @@ import java.util.concurrent.Executors;
  * Everything is clicked with the pointer, like a page.
  */
 final class Start extends FrameLayout {
-    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT, WELCOME }
+    enum Page { HOME, TABS, HISTORY, DOWNLOADS, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT, WELCOME }
 
     static final String[] BACKGROUNDS = {"Plain", "Frosted TV Home"};
     /** Nothing pinned at first: the row fills with the sites you visit. */
@@ -299,6 +299,7 @@ final class Start extends FrameLayout {
         switch (p) {
             case TABS: fillTabs(); break;
             case HISTORY: fillHistory(); break;
+            case DOWNLOADS: fillDownloads(); break;
             case SETTINGS: fillSettings(); break;
             case SEARCH: fillSearch(); break;
             case BLOCKING: fillBlocking(); break;
@@ -318,6 +319,8 @@ final class Start extends FrameLayout {
         int open = b.openTabs().size();
         navRow(R.drawable.ic_tabs, "Tabs", open == 0 ? null : String.valueOf(open), Page.TABS);
         navRow(R.drawable.ic_history, "History", null, Page.HISTORY);
+        int saving = b.downloads().running();
+        navRow(R.drawable.ic_download, "Downloads", saving == 0 ? null : String.valueOf(saving), Page.DOWNLOADS);
         if (b.updater().state() == Updater.State.READY) {
             View u = navItem(R.drawable.ic_update, "Update to " + b.updater().latest(), null, false);
             u.setOnClickListener(v -> b.installUpdate());
@@ -561,6 +564,87 @@ final class Start extends FrameLayout {
             r.addView(at, lp(-2, -2, dp(12), 0, 0, 0));
             r.setOnClickListener(v -> b.openUrl(e.url));
         }
+    }
+
+    // ---- Downloads
+
+    /** Each running download's second line, kept up to date while the page is open. */
+    private final java.util.Map<Long, TextView> saving = new java.util.HashMap<>();
+
+    private void fillDownloads() {
+        removeCallbacks(downloadTick);
+        saving.clear();
+        List<Downloads.Item> all = b.downloads().all();
+        title("Downloads", null);
+        if (all.isEmpty()) {
+            note("Files you download from websites show up here. They're saved in the TV's Downloads folder.");
+            return;
+        }
+        boolean anyDone = false;
+        for (Downloads.Item i : all) anyDone |= !i.running();
+        if (anyDone) row(R.drawable.ic_close, "Delete finished downloads", null, false, () -> {
+            new AlertDialog.Builder(getContext(), Ui.dialog())
+                    .setTitle("Delete finished downloads?")
+                    .setMessage("The files are deleted from this TV. Downloads still going carry on.")
+                    .setPositiveButton("Delete", (d, w) -> {
+                        for (Downloads.Item i : b.downloads().all()) if (!i.running()) b.downloads().remove(i.id);
+                        show(Page.DOWNLOADS);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        gap();
+        for (Downloads.Item i : all) {
+            LinearLayout r = twoLine(i.name, downloadState(i), false);
+            if (i.running()) saving.put(i.id, (TextView) ((LinearLayout) r.getChildAt(1)).getChildAt(1));
+            r.setOnClickListener(v -> {
+                if (i.finished()) b.openDownload(i.id);
+                else if (i.failed()) { b.downloads().remove(i.id); b.download(i.url, null, null, i.mime); show(Page.DOWNLOADS); }
+            });
+            ImageView x = iconButton(R.drawable.ic_close, i.running() ? "Cancel" : "Delete", v -> {
+                b.downloads().remove(i.id);
+                show(Page.DOWNLOADS);
+            });
+            r.addView(x, lp(dp(36), dp(36), dp(12), 0, 0, 0));
+        }
+        if (!saving.isEmpty()) postDelayed(downloadTick, 1000);
+    }
+
+    /** "12 MB of 80 MB · 15%", "Waiting", "Failed · select to try again", or "80 MB · 6:12 pm". */
+    private String downloadState(Downloads.Item i) {
+        Context c = getContext();
+        if (i.failed()) return "Failed · select to try again";
+        if (i.finished()) {
+            String when = DateUtils.isToday(i.at)
+                    ? new SimpleDateFormat(android.text.format.DateFormat.is24HourFormat(c) ? "H:mm" : "h:mm a",
+                            Locale.getDefault()).format(new Date(i.at)).toLowerCase(Locale.ROOT)
+                    : dayOf(i.at);
+            return android.text.format.Formatter.formatShortFileSize(c, i.total) + " · " + when;
+        }
+        if (i.done <= 0) return i.status == android.app.DownloadManager.STATUS_PAUSED ? "Paused, waiting for the network" : "Waiting";
+        String done = android.text.format.Formatter.formatShortFileSize(c, i.done);
+        if (i.total <= 0) return done;
+        return done + " of " + android.text.format.Formatter.formatShortFileSize(c, i.total)
+                + " · " + Math.round(100f * i.done / i.total) + "%";
+    }
+
+    /** Once a second while something downloads: new numbers in place, or the page again when one ends. */
+    private final Runnable downloadTick = new Runnable() {
+        @Override public void run() {
+            if (page != Page.DOWNLOADS || getVisibility() != VISIBLE || saving.isEmpty()) return;
+            for (java.util.Map.Entry<Long, TextView> e : saving.entrySet()) {
+                Downloads.Item i = b.downloads().get(e.getKey());
+                if (i == null || !i.running()) { show(Page.DOWNLOADS); return; }
+                e.getValue().setText(downloadState(i));
+            }
+            postDelayed(this, 1000);
+        }
+    };
+
+    /** A download started or ended: the sidebar's count, and the list if it's open. */
+    void downloadsChanged() {
+        if (getVisibility() != VISIBLE) return;
+        if (page == Page.DOWNLOADS) show(Page.DOWNLOADS); else fillNav();
     }
 
     private static String dayOf(long at) {
@@ -1075,7 +1159,7 @@ final class Start extends FrameLayout {
         }
     };
 
-    @Override protected void onDetachedFromWindow() { removeCallbacks(tick); super.onDetachedFromWindow(); }
+    @Override protected void onDetachedFromWindow() { removeCallbacks(tick); removeCallbacks(downloadTick); super.onDetachedFromWindow(); }
 
     /** Site icons in memory, and their own threads so one slow site doesn't hold up the rest. */
     private static final java.util.Map<String, Bitmap> ICONS = new java.util.concurrent.ConcurrentHashMap<>();

@@ -119,6 +119,12 @@ public class BrowserActivity extends Activity {
     private Start start;
     private Keyboard keyboard;
     private Voice voice;
+    private Downloads downloads;
+    /** A short message in a pill near the bottom ("Downloading…", "Video playing"), with one button. */
+    private LinearLayout notice;
+    private TextView noticeText, noticeAction;
+    private Runnable noticeDo;
+    private long offeredFullAt;
     /** What to do with the words once the microphone is allowed. */
     private java.util.function.Consumer<String> pendingVoice;
     /** The TV's own client hints (mobile, Android), and desktop ones (not mobile, Linux). */
@@ -155,6 +161,7 @@ public class BrowserActivity extends Activity {
         // the TV's would get its "use the keyboard on your mobile device" panel over the page instead.
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
         sp = getSharedPreferences("browser", MODE_PRIVATE);
+        downloads = new Downloads(this);
         // Once, from the version with a Browsing mode setting: every site back to TV mode.
         if (!sp.getBoolean("modes_reset", false)) {
             SharedPreferences.Editor e = sp.edit().remove("mode").remove("desktop_default").putBoolean("modes_reset", true);
@@ -213,6 +220,9 @@ public class BrowserActivity extends Activity {
                 else mouse(MotionEvent.ACTION_SCROLL, dx, dy);
             }
         });
+        FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-2, dp(56), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        np.bottomMargin = dp(32);
+        root.addView(buildNotice(), np);
         // Docked to the bottom edge, the full width of the screen.
         root.addView(keyboard, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         voice = new Voice(this);
@@ -232,6 +242,7 @@ public class BrowserActivity extends Activity {
                     @Override public void onInputDeviceRemoved(int id) { physicalKeyboard = false; }
                 }, main);
         setContentView(root);
+        registerReceiver(downloadDone, new android.content.IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE));
 
         restoreTabs();
         if (b == null) showSplash();
@@ -284,6 +295,7 @@ public class BrowserActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        unregisterReceiver(downloadDone);
         voice.release();
         for (Tab t : tabs) if (t.web != null) t.web.destroy();
         super.onDestroy();
@@ -420,6 +432,8 @@ public class BrowserActivity extends Activity {
         InputBridge(Tab t) { tab = t; }
         @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
         @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
+        /** A real video started playing in a frame: offer to show it full screen. */
+        @JavascriptInterface public void video(String frame) { main.post(() -> offerFullscreen(tab)); }
         /** A frame's video started or stopped playing; frames that are playing repeat it now and then. */
         @JavascriptInterface public void playing(String frame, boolean on) {
             main.post(() -> {
@@ -591,8 +605,15 @@ public class BrowserActivity extends Activity {
                 return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
             }
         });
-        w.setDownloadListener((url, ua, disposition, mime, length) ->
-                toast("Downloads aren't supported. Open it on another device"));
+        w.setDownloadListener((url, ua, disposition, mime, length) -> {
+            // A tab opened only for the file (a link from another app, or one that opens a new tab)
+            // has nothing to show; it closes, as in Chrome.
+            if (w.copyBackForwardList().getSize() == 0) {
+                closeTab(t);
+                if (tab.empty()) showStart(Start.Page.HOME);
+            }
+            download(url, ua, disposition, mime);
+        });
         return w;
     }
 
@@ -993,6 +1014,7 @@ public class BrowserActivity extends Activity {
         fullscreen = v;
         fullscreenDone = done;
         exitBar();
+        hideNotice();
         // Only the video on screen: the page, bar and pointer underneath aren't drawn meanwhile.
         cursor.setVisibility(View.GONE);
         pages.setVisibility(View.INVISIBLE);
@@ -1036,12 +1058,171 @@ public class BrowserActivity extends Activity {
 
     private final Runnable recheckAwake = this::stayAwake;
 
+    // ---------------------------------------------------------------- notices, full screen, downloads
+
+    private View buildNotice() {
+        notice = new LinearLayout(this);
+        notice.setGravity(Gravity.CENTER_VERTICAL);
+        notice.setPadding(dp(22), 0, dp(8), 0);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(28));
+        bg.setColor(Ui.SURFACE);
+        notice.setBackground(bg);
+        notice.setElevation(dp(10));
+        // Clicks on the pill stay on it, not on the page underneath.
+        notice.setClickable(true);
+        noticeText = Ui.text(this, 15, 400, Ui.TEXT);
+        noticeText.setSingleLine(true);
+        noticeText.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        noticeText.setMaxWidth(dp(420));
+        notice.addView(noticeText);
+        noticeAction = Ui.text(this, 14, 600, Ui.BG);
+        noticeAction.setGravity(Gravity.CENTER);
+        noticeAction.setPadding(dp(18), 0, dp(18), 0);
+        // Lime when the pointer is on it, like the keyboard's keys.
+        noticeAction.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_hovered}, {}},
+                new int[]{Keyboard.ON_LIME, Ui.BG}));
+        android.graphics.drawable.StateListDrawable ab = new android.graphics.drawable.StateListDrawable();
+        GradientDrawable on = new GradientDrawable(), off = new GradientDrawable();
+        on.setCornerRadius(dp(20));
+        on.setColor(Keyboard.LIME);
+        off.setCornerRadius(dp(20));
+        off.setColor(Ui.TEXT);
+        ab.addState(new int[]{android.R.attr.state_hovered}, on);
+        ab.addState(new int[]{}, off);
+        noticeAction.setBackground(ab);
+        noticeAction.setClickable(true);
+        noticeAction.setOnClickListener(v -> {
+            Runnable r = noticeDo;
+            hideNotice();
+            if (r != null) r.run();
+        });
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-2, dp(40));
+        ap.leftMargin = dp(18);
+        notice.addView(noticeAction, ap);
+        notice.setVisibility(View.GONE);
+        return notice;
+    }
+
+    /** Shows the pill for a few seconds; action may be null for a message alone. */
+    private void showNotice(String text, String action, Runnable run, long forMs) {
+        noticeText.setText(text);
+        noticeAction.setText(action);
+        noticeAction.setVisibility(action == null ? View.GONE : View.VISIBLE);
+        noticeDo = run;
+        main.removeCallbacks(noticeOff);
+        if (notice.getVisibility() != View.VISIBLE) {
+            notice.setVisibility(View.VISIBLE);
+            notice.setAlpha(0f);
+            notice.setTranslationY(dp(16));
+            notice.animate().alpha(1f).translationY(0).setDuration(180).start();
+        }
+        main.postDelayed(noticeOff, forMs);
+    }
+
+    private final Runnable noticeOff = () ->
+            notice.animate().alpha(0f).setDuration(160).withEndAction(this::hideNotice).start();
+
+    private void hideNotice() {
+        if (notice == null) return;
+        main.removeCallbacks(noticeOff);
+        notice.animate().cancel();
+        notice.setVisibility(View.GONE);
+        noticeDo = null;
+    }
+
+    private static boolean over(View v, float x, float y) {
+        int[] at = new int[2];
+        v.getLocationInWindow(at);
+        return x >= at[0] && y >= at[1] && x < at[0] + v.getWidth() && y < at[1] + v.getHeight();
+    }
+
+    /** A video with sound began on the page you're looking at: one offer at a time, not every few seconds. */
+    private void offerFullscreen(Tab t) {
+        if (t != tab || fullscreen != null || start.getVisibility() == View.VISIBLE) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - offeredFullAt < 30_000) return;
+        offeredFullAt = now;
+        showNotice("Video playing", "Full screen", this::fullscreenVideo, 8000);
+    }
+
+    /**
+     * The page puts its playing video full screen (assets/frames.js, 3c). It's asked with a key press,
+     * since pages may only go full screen in answer to one; the keys are ones no site uses.
+     */
+    private void fullscreenVideo() {
+        if (web == null) return;
+        WebView w = web;
+        // The page only hears keys once it has focus, which reaches it a moment after the view's.
+        boolean focused = w.hasFocus();
+        if (!focused) w.requestFocus();
+        main.postDelayed(() -> {
+            if (w != web) return;
+            int meta = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON | KeyEvent.META_ALT_ON | KeyEvent.META_ALT_LEFT_ON
+                    | KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON;
+            long now = SystemClock.uptimeMillis();
+            w.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F12, 0, meta));
+            w.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_F12, 0, meta));
+        }, focused ? 0 : 250);
+    }
+
+    Downloads downloads() { return downloads; }
+
+    /** A site handed us a file: the TV's download service saves it, and the pill says so. */
+    void download(String url, String userAgent, String disposition, String mime) {
+        String ua = userAgent != null ? userAgent : web != null ? web.getSettings().getUserAgentString() : null;
+        String name = downloads.start(url, ua, disposition, mime);
+        if (name == null) showNotice("This file can't be downloaded", null, null, 4000);
+        else showNotice("Downloading " + name, "Downloads", () -> showStart(Start.Page.DOWNLOADS), 6000);
+        start.downloadsChanged();
+    }
+
+    /** One finished: say so, with the file a click away. */
+    private final android.content.BroadcastReceiver downloadDone = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context c, Intent i) {
+            long id = i.getLongExtra(android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+            Downloads.Item d = downloads.get(id);
+            if (d == null) return;
+            start.downloadsChanged();
+            // The service sometimes says so again later (after an update, say); old news isn't shown.
+            if (System.currentTimeMillis() - d.at > 60_000) return;
+            if (fullscreen != null || start.getVisibility() == View.VISIBLE) return;
+            if (d.finished()) showNotice(d.name + " downloaded", "Open", () -> openDownload(id), 8000);
+            else if (d.failed()) showNotice("Couldn't download " + d.name, "Downloads", () -> showStart(Start.Page.DOWNLOADS), 8000);
+        }
+    };
+
+    /**
+     * Opens a finished download: an app goes to the TV's installer, anything else to an app that opens
+     * it. With no such app, pictures, videos, sound and text open in a tab here.
+     */
+    void openDownload(long id) {
+        Uri file = downloads.file(id);
+        Downloads.Item d = downloads.get(id);
+        if (file == null || d == null) { toast("That file has been deleted"); return; }
+        String mime = downloads.mime(id);
+        if (d.name != null && d.name.toLowerCase(java.util.Locale.ROOT).endsWith(".apk")) mime = "application/vnd.android.package-archive";
+        Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(file, mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(view);
+            return;
+        } catch (ActivityNotFoundException | SecurityException ignored) { }
+        if (mime != null && (mime.startsWith("video/") || mime.startsWith("audio/") || mime.startsWith("image/")
+                || mime.startsWith("text/"))) {
+            openInNewTab(file.toString());
+        } else {
+            toast("No app on this TV opens " + d.name);
+        }
+    }
+
     // ---------------------------------------------------------------- the pointer
 
     /** The pointer moved: light up what's under it on our own screens, or pass the hover to the page. */
     private void hover(float x, float y) {
         View hit = null;
-        if (start.getVisibility() == View.VISIBLE) hit = Ui.hit(start, x, y);
+        if (notice.getVisibility() == View.VISIBLE && over(notice, x, y)) { hit = Ui.hit(notice, x, y); hideTip(); }
+        else if (start.getVisibility() == View.VISIBLE) hit = Ui.hit(start, x, y);
         else if (y < pages.getTop()) hit = Ui.hit(bar, x, y);
         else { hoverPage(); hideTip(); }
         if (hit == hovered) return;
@@ -1519,6 +1700,7 @@ public class BrowserActivity extends Activity {
         exitBar();
         keyboard.close();
         hideTip();
+        hideNotice();
         start.sheet(false);
         if (start.getVisibility() != View.VISIBLE) {
             start.setVisibility(View.VISIBLE);

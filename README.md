@@ -38,17 +38,25 @@ pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but wo
   [Steven Black's hosts list](https://github.com/StevenBlack/hosts) (about 80,000 ad and malware hosts),
   refreshed weekly. The bar shows how many requests were blocked on the page, and the shield turns
   blocking off for one site that won't work with it.
+- **No "turn off your ad blocker" walls.** The usual detector scripts are told there's no ad blocker,
+  and a wall that shows anyway is taken off the page, with its dimmed backdrop, so you can scroll and
+  read again.
 - **Video players that just play.** Players inside frames often stop with "sandboxed iframe" or
   "disable your popup blocker" messages. Frames are never sandboxed, pop-ups get a harmless stand-in
   instead of a window, and the browser doesn't tell sites it's an app (no X-Requested-With header).
 - **Pop-ups blocked**: a link you click opens in the tab, anything a page tries to open on its own
   doesn't.
 - **Desktop site** per site, for the odd site that still needs a Windows browser; every site already
-  opens in its full desktop layout, fitted to the screen.
+  opens in its full desktop layout, fitted to the screen. Fitted to whichever screen it's on: a TV
+  with room for more lays pages out at its own width, at 100%, instead of enlarging a smaller one.
 - **Zoom** per site, from 50% to 200%, remembered for next time.
-- **Full-screen video** with Back to leave it. The screen stays on while a video plays, so the TV's
+- **Full-screen video** with Back to leave it. When a video with sound starts, a small **Full screen**
+  button appears at the bottom for a few seconds. The screen stays on while a video plays, so the TV's
   screensaver and display timer wait, and with **Lighter pages** on the page behind it drops its blur
   and looping animations until the video stops.
+- **Downloads**, under History: files from websites are saved by the TV's own download service to its
+  Downloads folder, with progress, and a button to open them when they're done. Apps (APKs) open in
+  the TV's installer; pictures, videos and music with no app to open them open in a tab.
 - **Opens web links from other apps**: choose BEESH Browser and Always when the TV asks.
 - **Updates itself** from this repo's GitHub releases, like BEESH Launcher.
 - Small: about 500 KB, since the page engine is the TV's own.

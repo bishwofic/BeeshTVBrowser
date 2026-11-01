@@ -89,6 +89,8 @@
     var tell = function () {
       var now = videoPlaying();
       if (now || said) BeeshTVInput.playing(frameId, now);
+      // The frame around this one learns too, so it knows which of its frames to make full screen.
+      if (now !== said && window.parent !== window) window.parent.postMessage({ __beeshtvPlaying: now }, '*');
       said = now;
     };
     ['playing', 'pause', 'ended', 'emptied'].forEach(function (ev) {
@@ -96,6 +98,64 @@
     });
     setInterval(function () { if (said) tell(); }, 15000);
     window.addEventListener('pagehide', function () { if (said) BeeshTVInput.playing(frameId, false); });
+
+    // 3c. A real video (big, with sound, longer than a clip) starting to play: the browser offers to
+    //     show it full screen. Muted previews and small autoplaying clips don't count.
+    document.addEventListener('playing', function (e) {
+      var v = e.target;
+      if (!v || v.tagName !== 'VIDEO' || v.__beeshtvOffered || v.muted || document.fullscreenElement) return;
+      var r = v.getBoundingClientRect();
+      if (r.width < 320 || r.height < 180 || (isFinite(v.duration) && v.duration < 30)) return;
+      v.__beeshtvOffered = true;
+      if (BeeshTVInput.video) BeeshTVInput.video(frameId);
+    }, true);
+
+    // Full screen, when asked: the browser presses Ctrl+Alt+Shift+F12, which no site uses, and a key
+    // press is what lets a page go full screen. The frame that gets it shows its own playing video;
+    // a frame without one shows the frame inside it that has one, or asks the frame around it.
+    var playingFrame = null;
+    var frameOf = function (win) {
+      var fs = document.querySelectorAll('iframe,frame');
+      for (var i = 0; i < fs.length; i++) if (fs[i].contentWindow === win) return fs[i];
+      return null;
+    };
+    var biggestPlaying = function () {
+      var best = null, area = 0, vs = document.getElementsByTagName('video');
+      for (var i = 0; i < vs.length; i++) {
+        var v = vs[i], r = v.getBoundingClientRect();
+        if (!v.paused && !v.ended && r.width * r.height > area) { best = v; area = r.width * r.height; }
+      }
+      return best;
+    };
+    var full = function (el) {
+      try {
+        var p = (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+        if (p && p.catch) p.catch(function () {});
+        return true;
+      } catch (e) { return false; }
+    };
+    var goFull = function () {
+      var v = biggestPlaying();
+      if (v && full(v)) return;
+      if (playingFrame && playingFrame.isConnected && full(playingFrame)) return;
+      if (window.parent !== window) window.parent.postMessage({ __beeshtvFull: true }, '*');
+    };
+    window.addEventListener('keydown', function (e) {
+      if (e.key !== 'F12' || !e.ctrlKey || !e.altKey || !e.shiftKey) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      goFull();
+    }, true);
+    window.addEventListener('message', function (e) {
+      var d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.__beeshtvFull === true) { goFull(); return; }
+      if (typeof d.__beeshtvPlaying !== 'boolean') return;
+      var f = frameOf(e.source);
+      if (!f) return;
+      if (d.__beeshtvPlaying) playingFrame = f; else if (playingFrame === f) playingFrame = null;
+      if (window.parent !== window) window.parent.postMessage({ __beeshtvPlaying: d.__beeshtvPlaying }, '*');
+    });
   }
 
   // 4. Blocked hosts fail the way they do with any ad blocker: the browser decides (adblock lists,
@@ -206,6 +266,9 @@
   if (window.top === window && window.BeeshTVInput && BeeshTVInput.layoutWidth) {
     var layout = BeeshTVInput.layoutWidth(location.hostname);
     var screenW = window.__beeshtvScreen || screen.width;
+    // A screen wider than that (a big or low-density TV) lays pages out at its own width, at 100%,
+    // instead of blowing a laptop-sized page up to fill it.
+    if (screenW > layout) layout = screenW;
     if (layout > 0) {
       var want = 'width=' + layout + ',initial-scale=' + (Math.round(screenW / layout * 1000) / 1000)
           + ',minimum-scale=0.25,maximum-scale=5,user-scalable=yes';
@@ -294,6 +357,83 @@
     document.addEventListener('DOMContentLoaded', sweep);
     window.addEventListener('load', function () { sweep(); setTimeout(sweep, 1500); setTimeout(sweep, 4000); });
     new MutationObserver(later).observe(document, { childList: true, subtree: true });
+  }
+
+  // 6c. "Turn off your ad blocker" walls, with blocking on for the site. The usual detector scripts are
+  //     answered "no ad blocker"; a wall that shows anyway (a fixed box over the page that talks about
+  //     ad blockers) is taken off, with its dimmed backdrop, and the page can scroll again.
+  if (window.BeeshTVInput && BeeshTVInput.adsOn && BeeshTVInput.adsOn(location.hostname)) {
+    var calm = function () {
+      var self = {
+        onDetected: function () { return self; },
+        onNotDetected: function (f) { try { f(); } catch (e) {} return self; },
+        on: function (detected, f) { if (!detected) try { f(); } catch (e) {} return self; },
+        check: function () { return false; }, emitEvent: function () { return self; },
+        clearEvent: function () {}, setOption: function () { return self; }
+      };
+      return self;
+    };
+    ['fuckAdBlock', 'blockAdBlock', 'sniffAdBlock'].forEach(function (n) {
+      var one = calm();
+      try { Object.defineProperty(window, n, { get: function () { return one; }, set: function () {} }); } catch (e) {}
+    });
+    ['FuckAdBlock', 'BlockAdBlock', 'SniffAdBlock'].forEach(function (n) {
+      try { Object.defineProperty(window, n, { get: function () { return calm; }, set: function () {} }); } catch (e) {}
+    });
+    try { window.canRunAds = true; window.isAdBlockActive = false; } catch (e) {}
+
+    var WALL = /\bad[\s-]?block|\b(whitelist|allowlist) (us|this site|our site)\b|\bsupport us by (disabling|allowing)\b|\ballow ads\b/i;
+    var fixedUp = function (el) {
+      var top = null;
+      for (var n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        var pos = getComputedStyle(n).position;
+        if (pos === 'fixed' || pos === 'sticky') top = n;
+      }
+      return top;
+    };
+    var covers = function (el, part) {
+      var r = el.getBoundingClientRect();
+      return r.width * r.height >= innerWidth * innerHeight * part;
+    };
+    var unlock = function () {
+      [document.documentElement, document.body].forEach(function (n) {
+        if (!n) return;
+        var cs = getComputedStyle(n);
+        if (cs.overflow === 'hidden' || cs.overflowY === 'hidden') n.style.setProperty('overflow', 'auto', 'important');
+        if (n === document.body && cs.position === 'fixed') n.style.setProperty('position', 'static', 'important');
+        if (cs.filter && cs.filter.indexOf('blur(') >= 0) n.style.setProperty('filter', 'none', 'important');
+      });
+      // Walls often blur the page's main block instead of the body.
+      var kids = document.body ? document.body.children : [];
+      for (var i = 0; i < kids.length; i++) {
+        var f = getComputedStyle(kids[i]).filter;
+        if (f && f.indexOf('blur(') >= 0) kids[i].style.setProperty('filter', 'none', 'important');
+      }
+    };
+    var tearDown = function () {
+      if (!document.body || !document.elementsFromPoint) return;
+      var gone = false;
+      [[0.5, 0.5], [0.5, 0.3], [0.5, 0.7]].forEach(function (at) {
+        var stack = document.elementsFromPoint(innerWidth * at[0], innerHeight * at[1]);
+        for (var i = 0; i < stack.length; i++) {
+          var box = fixedUp(stack[i]);
+          if (!box || !box.isConnected) continue;
+          var words = (box.innerText || '').trim();
+          if (words.length > 0 && words.length < 2000 && WALL.test(words)) { box.remove(); gone = true; continue; }
+          // The dimmed backdrop under such a wall: fixed, nearly the whole screen, no words.
+          if (gone && words.length < 20 && covers(box, 0.8)) box.remove();
+        }
+      });
+      if (gone) unlock();
+    };
+    // Often for the first minute (when walls appear), then now and then.
+    var looks = 0;
+    var look = function () {
+      tearDown();
+      looks++;
+      setTimeout(look, looks < 40 ? 1500 : 5000);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', look); else look();
   }
 
   // 7. YouTube's own ads (the ones inside videos), as Brave and uBlock Origin do it: the player is
