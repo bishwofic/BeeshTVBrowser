@@ -87,7 +87,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 1. On the TV, open **Settings → System → About** and press OK on **Android TV OS build** seven times.
    Go back to **Settings → System → Developer options** and turn on **USB debugging**.
 2. Find the TV's IP address in **Settings → Network & Internet** (select your Wi-Fi network).
-3. Download this repo (or just `dist/BeeshTV-Browser-2.5.apk` and `install.sh`) and run:
+3. Download this repo (or just `dist/BeeshTV-Browser-2.6.apk` and `install.sh`) and run:
 
    ```bash
    ./install.sh 192.168.1.20
@@ -96,7 +96,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 `install.sh` installs the APK, lets it install its own updates, and opens it. To remove it:
 `./install.sh 192.168.1.20 --undo`.
 
-Without a computer, download `BeeshTV-Browser-2.5.apk` from the
+Without a computer, download `BeeshTV-Browser-2.6.apk` from the
 [latest release](https://github.com/bishwofic/BeeshTVBrowser/releases/latest), copy it to the TV (a USB
 stick, LocalSend, or a downloader app) and open it.
 

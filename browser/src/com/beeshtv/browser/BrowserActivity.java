@@ -242,7 +242,10 @@ public class BrowserActivity extends Activity {
                     @Override public void onInputDeviceRemoved(int id) { physicalKeyboard = false; }
                 }, main);
         setContentView(root);
-        registerReceiver(downloadDone, new android.content.IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+        // From the TV's download service, another app, so it has to be let in.
+        android.content.IntentFilter done = new android.content.IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(downloadDone, done, RECEIVER_EXPORTED);
+        else registerReceiver(downloadDone, done);
 
         restoreTabs();
         if (b == null) showSplash();
