@@ -7,17 +7,22 @@ the address, voice search, ad blocking, desktop site and zoom.
 Built on the TV's own Android System WebView (Chromium), so pages render like they do in Chrome. It
 pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but works on its own.
 
-![Home page, dark and frosted over the TV's Home screen](docs/home.jpg)
+![Home page](docs/home.jpg)
 
-| First run | Appearance | Keyboard, in light mode |
-|---|---|---|
-| ![First-run setup](docs/setup.jpg) | ![Appearance settings](docs/settings.jpg) | ![The on-screen keyboard](docs/keyboard.jpg) |
+| First run | Keyboard |
+|---|---|
+| ![First-run setup](docs/setup.jpg) | ![The on-screen keyboard](docs/keyboard.jpg) |
+
+| A website | Settings, over the website |
+|---|---|
+| ![Cricbuzz in BEESH Browser](docs/site.jpg) | ![Settings as a frosted card](docs/settings.jpg) |
 
 ## Features
 
-- **A home page** on the same photo as your TV's Home (from BEESH Launcher, blurred the way the
-  launcher blurs it), with the weather and time, a big search box and your shortcuts (hold OK on one
-  to remove it). Settings can turn the photo "off", for a heavily frosted version of it instead.
+- **A home page** with the weather and time, a big search box and your shortcuts (hold OK on one
+  to remove it). It's plain dark to start with; **Settings → Appearance → Background → Frosted TV
+  Home** puts your TV's Home screen behind it instead (from BEESH Launcher), heavily blurred with a
+  fine grain so text stays easy to read.
 - **A pointer for the D-pad.** It starts slow for precise aim and speeds up while you hold a
   direction. OK clicks (hold for a long press), hovering opens menus, and pushing the pointer against
   any edge scrolls whatever is under it, inner panes included. Page Up / Down and Channel Up / Down

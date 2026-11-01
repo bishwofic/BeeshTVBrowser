@@ -26,7 +26,7 @@ final class Backdrop {
         try (InputStream in = c.getContentResolver().openInputStream(SCREEN)) {
             Bitmap small = in == null ? null : BitmapFactory.decodeStream(in);
             if (small != null) {
-                Bitmap out = blur(small, 0.5f);
+                Bitmap out = blur(small, 1f);
                 small.recycle();
                 return out;
             }
@@ -62,7 +62,7 @@ final class Backdrop {
             // Frosted deep: the photo reads as colour and light, not detail.
             Bitmap small = Bitmap.createScaledBitmap(soft, soft.getWidth() / 4, soft.getHeight() / 4, true);
             soft.recycle();
-            Bitmap out = blur(small, 0.5f);
+            Bitmap out = blur(small, 1f);
             small.recycle();
             return out;
         } catch (Exception | OutOfMemoryError e) {

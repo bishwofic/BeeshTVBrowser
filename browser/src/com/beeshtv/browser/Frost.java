@@ -19,8 +19,15 @@ final class Frost extends FrameLayout {
     private final Paint tint = new Paint();
     private final Path shape = new Path();
     private final RectF box = new RectF(), dst = new RectF();
-    private final int[] at = new int[2];
+    private final int[] at = new int[2], now = new int[2];
     private float[] radii = new float[8];
+    /** A slide moves the view without drawing it again, so follow it here and redraw. */
+    private final android.view.ViewTreeObserver.OnPreDrawListener follow = () -> {
+        if (backdrop == null) return true;
+        getLocationInWindow(now);
+        if (now[0] != at[0] || now[1] != at[1]) invalidate();
+        return true;
+    };
 
     Frost(Context c) {
         super(c);
@@ -46,6 +53,16 @@ final class Frost extends FrameLayout {
         invalidate();
     }
 
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        getViewTreeObserver().addOnPreDrawListener(follow);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        getViewTreeObserver().removeOnPreDrawListener(follow);
+        super.onDetachedFromWindow();
+    }
+
     @Override
     protected void onDraw(Canvas c) {
         box.set(0, 0, getWidth(), getHeight());
@@ -63,6 +80,7 @@ final class Frost extends FrameLayout {
             c.drawColor(Ui.SURFACE);
         }
         c.drawRect(box, tint);
+        c.drawRect(box, Ui.grain());
         c.restoreToCount(save);
     }
 }

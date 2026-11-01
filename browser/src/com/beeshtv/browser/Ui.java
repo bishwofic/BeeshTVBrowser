@@ -43,6 +43,7 @@ final class Ui {
 
     static void theme(boolean isLight) {
         light = isLight;
+        grain = null;
         if (light) {
             BG = 0xFFF5F2F1; SURFACE = 0xFFFFFFFF;
             TEXT = 0xFF1C1717; TEXT_2 = 0xB31C1717; TEXT_3 = 0x7A1C1717;
@@ -161,6 +162,36 @@ final class Ui {
         g.setCornerRadius(dp(c, radiusDp));
         g.setColor(color);
         return g;
+    }
+
+    private static Paint grain;
+
+    /**
+     * Film grain: fine specks, one screen pixel each, laid over frosted glass. Without it a heavy blur
+     * reads as a smear; with it the surface reads as a material, and text on it holds together.
+     */
+    static Paint grain() {
+        if (grain == null) {
+            int n = 128;
+            int[] px = new int[n * n];
+            java.util.Random r = new java.util.Random(7);
+            for (int i = 0; i < px.length; i++) {
+                int a = r.nextInt(light ? 12 : 15);
+                px[i] = a << 24 | (r.nextBoolean() ? 0xFFFFFF : 0x000000);
+            }
+            android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(px, n, n, android.graphics.Bitmap.Config.ARGB_8888);
+            grain = new Paint();
+            grain.setShader(new android.graphics.BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT));
+        }
+        return grain;
+    }
+
+    /** Grain as a layer, for views that take a drawable. */
+    static final class Grain extends Drawable {
+        @Override public void draw(Canvas c) { c.drawRect(getBounds(), grain()); }
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(ColorFilter f) { }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     /** The plain background, with the faint red of a standby light low in one corner. */

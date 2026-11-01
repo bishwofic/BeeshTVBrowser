@@ -652,7 +652,7 @@ final class Start extends FrameLayout {
     }
 
     /** Frosted by default. */
-    int background() { return Math.floorMod(sp.getInt("start_bg", 1), BACKGROUNDS.length); }
+    int background() { return Math.floorMod(sp.getInt("start_bg", 0), BACKGROUNDS.length); }
 
     private void fillLook() {
         backToSettings("Appearance");
@@ -906,6 +906,8 @@ final class Start extends FrameLayout {
         menu = new FrameLayout(c);
         menu.setClickable(true);
         menu.setOnClickListener(v -> closeMenu());
+        // Above the card over a website, which is raised.
+        menu.setElevation(dp(24));
         LinearLayout panel = column(c);
         panel.setPadding(dp(4), dp(4), dp(4), dp(4));
         GradientDrawable bg = new GradientDrawable();
@@ -1046,7 +1048,8 @@ final class Start extends FrameLayout {
             return;
         }
         // A veil over the photo so the text on it reads: dark, or pale in light mode.
-        shade.setBackgroundColor(Ui.light ? 0xA6F5F2F1 : 0x73000000);
+        shade.setBackground(new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{
+                new android.graphics.drawable.ColorDrawable(Ui.light ? 0xA6F5F2F1 : 0x73000000), new Ui.Grain()}));
         io.execute(() -> {
             Bitmap p = Backdrop.homeScreen(getContext());
             main.post(() -> { if (background() != 0) photo.setImageBitmap(p); });
