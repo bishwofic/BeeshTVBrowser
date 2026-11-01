@@ -75,9 +75,6 @@ public class BrowserActivity extends Activity {
     /** How sites are asked for their layout: TV (phone or TV layout, larger text) or Desktop. */
     static final String[] MODES = {"TV", "Desktop"};
     static final int TV = 0, DESKTOP = 1;
-    /** What drives the pointer: the remote, a mouse, or whichever was used last. */
-    static final String[] INPUTS = {"Automatic", "Remote", "Mouse"};
-    static final int AUTO = 0, REMOTE = 1, MOUSE = 2;
     /** Text size in TV mode, as a percentage: readable from the couch without breaking layouts. */
     static final int TV_TEXT = 115;
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
@@ -183,7 +180,6 @@ public class BrowserActivity extends Activity {
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
         setContentView(root);
 
-        if (input() == MOUSE) usingMouse(true);
         restoreTabs();
         String url = b == null ? urlFrom(getIntent()) : null;
         if (url != null) openFromOutside(url);
@@ -646,13 +642,6 @@ public class BrowserActivity extends Activity {
         refreshBar();
     }
 
-    int input() { return Math.floorMod(sp.getInt("input", AUTO), INPUTS.length); }
-
-    void setInput(int i) {
-        sp.edit().putInt("input", i).apply();
-        usingMouse(i == MOUSE);
-    }
-
     /** Dark or light: everything is drawn again in the new colours, on the same page. */
     void setLight(boolean light) {
         sp.edit().putBoolean("light", light).apply();
@@ -770,16 +759,19 @@ public class BrowserActivity extends Activity {
 
     // ---------------------------------------------------------------- a real mouse
 
-    /** A Bluetooth or USB mouse moved or clicked: it has its own pointer, so ours steps aside. */
+    /**
+     * A Bluetooth or USB mouse moved or clicked: it has its own pointer, so ours steps aside until an
+     * arrow on the remote is pressed. Nothing to set up; whichever was used last is in charge.
+     */
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent e) {
-        if (e.isFromSource(InputDevice.SOURCE_MOUSE) && input() != REMOTE) usingMouse(true);
+        if (e.isFromSource(InputDevice.SOURCE_MOUSE)) usingMouse(true);
         return super.dispatchGenericMotionEvent(e);
     }
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent e) {
-        if (e.isFromSource(InputDevice.SOURCE_MOUSE) && input() != REMOTE) usingMouse(true);
+        if (e.isFromSource(InputDevice.SOURCE_MOUSE)) usingMouse(true);
         return super.dispatchTouchEvent(e);
     }
 
@@ -828,14 +820,6 @@ public class BrowserActivity extends Activity {
         // Moving the pointer up or down leaves a field on the start screen.
         if (onStart && f instanceof EditText && down) { hideKeyboard(f); root.requestFocus(); }
 
-        // Mouse mode: the arrows scroll; OK and Back work as usual.
-        if (input() == MOUSE && code >= KeyEvent.KEYCODE_DPAD_UP && code <= KeyEvent.KEYCODE_DPAD_RIGHT) {
-            if (down && (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) {
-                float by = (code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1) * dp(120);
-                if (onStart) start.scrollBy(by); else mouse(MotionEvent.ACTION_SCROLL, 0, by);
-            }
-            return true;
-        }
         // An arrow on the remote brings our pointer back after the mouse.
         if (code >= KeyEvent.KEYCODE_DPAD_UP && code <= KeyEvent.KEYCODE_DPAD_RIGHT && down) usingMouse(false);
 
@@ -889,7 +873,6 @@ public class BrowserActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(14));
         bg.setColor(Ui.SURFACE);
-        bg.setStroke(Math.max(1, dp(0.75f)), Ui.HAIRLINE);
         bar.setBackground(bg);
 
         bar.addView(button(R.drawable.ic_back, "Back", v -> { if (web.canGoBack()) web.goBack(); }));

@@ -48,7 +48,7 @@ import java.util.concurrent.Executors;
  * Everything is clicked with the pointer, like a page.
  */
 final class Start extends FrameLayout {
-    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, INPUT, UPDATES, HELP, ABOUT }
+    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT }
 
     static final String[] BACKGROUNDS = {"Plain", "Frosted TV photo"};
     static final String DEFAULT_SHORTCUTS = "YouTube|https://www.youtube.com;Google|https://www.google.com;"
@@ -87,7 +87,7 @@ final class Start extends FrameLayout {
         // Sidebar.
         LinearLayout side = column(c);
         side.setPadding(dp(16), dp(28), dp(16), dp(24));
-        side.setBackgroundColor(0x0AFFFFFF);
+        side.setBackgroundColor(Ui.light ? 0x0A1C1717 : 0x0DF4F1F0);
         LinearLayout brand = new LinearLayout(c);
         brand.setGravity(Gravity.CENTER_VERTICAL);
         brand.setPadding(dp(8), 0, 0, 0);
@@ -122,9 +122,6 @@ final class Start extends FrameLayout {
         theme.setOnClickListener(v -> b.setLight(!Ui.light));
         side.addView(theme, lp(-1, dp(40), 0, 0, 0, 0));
         addView(side, new LayoutParams(dp(SIDEBAR), -1));
-        View edge = new View(c);
-        edge.setBackgroundColor(Ui.HAIRLINE);
-        addView(edge, frame(Math.max(1, dp(0.75f)), -1, Gravity.START, dp(SIDEBAR), 0, 0, 0));
 
         content = new FrameLayout(c);
         addView(content, frame(-1, -1, Gravity.START, dp(SIDEBAR), 0, 0, 0));
@@ -222,7 +219,7 @@ final class Start extends FrameLayout {
         if (menu != null) { closeMenu(); return true; }
         switch (page) {
             case HOME: return false;
-            case SEARCH: case BLOCKING: case SITES: case LOOK: case INPUT: case UPDATES: show(Page.SETTINGS); return true;
+            case SEARCH: case BLOCKING: case SITES: case LOOK: case UPDATES: show(Page.SETTINGS); return true;
             default: show(Page.HOME); return true;
         }
     }
@@ -255,7 +252,6 @@ final class Start extends FrameLayout {
             case BLOCKING: fillBlocking(); break;
             case SITES: fillSitesSettings(); break;
             case LOOK: fillLook(); break;
-            case INPUT: fillInput(); break;
             case UPDATES: fillUpdates(); break;
             case HELP: fillHelp(); break;
             case ABOUT: fillAbout(); break;
@@ -287,8 +283,7 @@ final class Start extends FrameLayout {
     }
 
     private static boolean isSettings(Page p) {
-        return p == Page.SEARCH || p == Page.BLOCKING || p == Page.SITES || p == Page.LOOK || p == Page.INPUT
-                || p == Page.UPDATES;
+        return p == Page.SEARCH || p == Page.BLOCKING || p == Page.SITES || p == Page.LOOK || p == Page.UPDATES;
     }
 
     /** A sidebar row; the current one sits on a faint frosted step with the red standby dot. */
@@ -517,7 +512,6 @@ final class Start extends FrameLayout {
         row(R.drawable.ic_desktop, "Sites", BrowserActivity.MODES[b.mode()] + " mode", true, () -> show(Page.SITES));
         row(Ui.light ? R.drawable.ic_sun : R.drawable.ic_moon, "Appearance", (Ui.light ? "Light" : "Dark") + " · "
                 + BACKGROUNDS[background()], true, () -> show(Page.LOOK));
-        row(R.drawable.ic_mouse, "Input", BrowserActivity.INPUTS[b.input()], true, () -> show(Page.INPUT));
         row(R.drawable.ic_update, "Updates", updateSummary(), true, () -> show(Page.UPDATES));
     }
 
@@ -598,14 +592,6 @@ final class Start extends FrameLayout {
                 + "its panels.");
     }
 
-    private void fillInput() {
-        backToSettings("Input");
-        choice("Input device", BrowserActivity.INPUTS, b.input(), b::setInput);
-        note("A Bluetooth or USB mouse works as it does on a computer: its own pointer, clicks and scroll "
-                + "wheel. Automatic hides the remote's pointer while you use the mouse and brings it back "
-                + "when you press an arrow. Mouse makes the arrows scroll the page instead.");
-    }
-
     String updateSummary() {
         Updater u = b.updater();
         switch (u.state()) {
@@ -652,6 +638,9 @@ final class Start extends FrameLayout {
         key("Back", "Previous page, then this screen");
         key("Menu", "Type in the address bar");
         key("Channel", "Scroll a screen at a time");
+        section("Mouse");
+        note("A Bluetooth or USB mouse works on its own: move it and its pointer takes over, press an "
+                + "arrow on the remote and the remote's pointer comes back.");
         section("Sites on Home");
         note("Hold OK on a site to keep it on Home or remove it. Sites you visit fill the rest of the row.");
     }
@@ -819,7 +808,6 @@ final class Start extends FrameLayout {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(12));
         bg.setColor(Ui.SURFACE);
-        bg.setStroke(Math.max(1, dp(0.75f)), Ui.HAIRLINE);
         panel.setBackground(bg);
         panel.setElevation(dp(8));
         panel.setClickable(true);
@@ -877,7 +865,7 @@ final class Start extends FrameLayout {
         list.addView(r, lp(-1, dp(48), 0, 0, 0, dp(2)));
     }
 
-    /** A small track and knob: filled with the text colour when on, a hairline when off. */
+    /** A small track and knob: filled with the text colour when on, a matte step when off. */
     static final class Switch extends View {
         private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final boolean on;
@@ -889,13 +877,6 @@ final class Start extends FrameLayout {
             paint.setStyle(android.graphics.Paint.Style.FILL);
             paint.setColor(on ? Ui.TEXT : Ui.HOVER);
             cv.drawRoundRect(0, 0, w, h, r, r, paint);
-            if (!on) {
-                paint.setStyle(android.graphics.Paint.Style.STROKE);
-                paint.setStrokeWidth(Math.max(1, h * 0.05f));
-                paint.setColor(Ui.HAIRLINE);
-                cv.drawRoundRect(0, 0, w, h, r, r, paint);
-                paint.setStyle(android.graphics.Paint.Style.FILL);
-            }
             paint.setColor(on ? Ui.BG : Ui.TEXT_2);
             float knob = r - pad;
             cv.drawCircle(on ? w - r : r, r, knob, paint);

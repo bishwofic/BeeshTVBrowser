@@ -34,7 +34,7 @@ final class Ui {
     static boolean light;
     // Neutral ramp.
     static int BG, SURFACE, TEXT, TEXT_2, TEXT_3;
-    /** Hairline borders and frosted fills, as fractions of the text colour. */
+    /** Separator lines, and the matte frosted fills (no outlines), as fractions of the text colour. */
     static int HAIRLINE, FROST, HOVER, SELECTED;
     /** The standby light. */
     static final int RED = 0xFFE5484D;
@@ -46,11 +46,11 @@ final class Ui {
         if (light) {
             BG = 0xFFF5F2F1; SURFACE = 0xFFFFFFFF;
             TEXT = 0xFF1C1717; TEXT_2 = 0xB31C1717; TEXT_3 = 0x7A1C1717;
-            HAIRLINE = 0x1F000000; FROST = 0x0D000000; HOVER = 0x17000000; SELECTED = 0x10000000;
+            HAIRLINE = 0x1A000000; FROST = 0x0F1C1717; HOVER = 0x1C1C1717; SELECTED = 0x141C1717;
         } else {
             BG = 0xFF0B0A0A; SURFACE = 0xFF151313;
             TEXT = 0xFFF4F1F0; TEXT_2 = 0xB3F4F1F0; TEXT_3 = 0x73F4F1F0;
-            HAIRLINE = 0x1AFFFFFF; FROST = 0x0FFFFFFF; HOVER = 0x1FFFFFFF; SELECTED = 0x17FFFFFF;
+            HAIRLINE = 0x17FFFFFF; FROST = 0x14F4F1F0; HOVER = 0x24F4F1F0; SELECTED = 0x1CF4F1F0;
         }
     }
 
@@ -109,12 +109,11 @@ final class Ui {
         return d;
     }
 
-    /** A frosted panel: faint white fill, hairline edge. */
+    /** A frosted panel: a soft matte fill, no outline. */
     static GradientDrawable frost(Context c, float radiusDp) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(c, radiusDp));
         g.setColor(FROST);
-        g.setStroke(Math.max(1, dp(c, 0.75f)), HAIRLINE);
         return g;
     }
 
@@ -125,21 +124,20 @@ final class Ui {
      */
     static StateListDrawable surface(Context c, float radiusDp, int rest) {
         StateListDrawable s = new StateListDrawable();
-        s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, HOVER, true));
-        s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, HOVER, true));
-        s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, HOVER, true));
-        s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, SELECTED, true));
-        s.addState(new int[]{}, fill(c, radiusDp, rest, rest != 0));
+        s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, HOVER));
+        s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, HOVER));
+        s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, HOVER));
+        s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, SELECTED));
+        s.addState(new int[]{}, fill(c, radiusDp, rest));
         s.setEnterFadeDuration(90);
         s.setExitFadeDuration(120);
         return s;
     }
 
-    private static GradientDrawable fill(Context c, float radiusDp, int color, boolean edge) {
+    private static GradientDrawable fill(Context c, float radiusDp, int color) {
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(c, radiusDp));
         g.setColor(color);
-        if (edge) g.setStroke(Math.max(1, dp(c, 0.75f)), HAIRLINE);
         return g;
     }
 
