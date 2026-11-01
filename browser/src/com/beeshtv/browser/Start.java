@@ -48,9 +48,9 @@ import java.util.concurrent.Executors;
  * Everything is clicked with the pointer, like a page.
  */
 final class Start extends FrameLayout {
-    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT }
+    enum Page { HOME, TABS, HISTORY, SETTINGS, SEARCH, BLOCKING, SITES, LOOK, UPDATES, HELP, ABOUT, WELCOME }
 
-    static final String[] BACKGROUNDS = {"Plain", "Frosted TV photo"};
+    static final String[] BACKGROUNDS = {"Plain", "Frosted TV Home"};
     /** Nothing pinned at first: the row fills with the sites you visit. */
     static final String DEFAULT_SHORTCUTS = "";
     static final int SITES = 5;
@@ -268,6 +268,7 @@ final class Start extends FrameLayout {
     /** Back on this screen: up from a settings page, else to Home. False when already on Home. */
     boolean back() {
         if (menu != null) { closeMenu(); return true; }
+        if (page == Page.WELCOME) { b.finishWelcome(); return true; }
         if (isSettings(page)) { show(Page.SETTINGS); return true; }
         // Over a website, Back closes the card; full screen, it goes to Home first.
         if (sheet || page == Page.HOME) return false;
@@ -306,6 +307,7 @@ final class Start extends FrameLayout {
             case UPDATES: fillUpdates(); break;
             case HELP: fillHelp(); break;
             case ABOUT: fillAbout(); break;
+            case WELCOME: fillWelcome(); break;
             default: break;
         }
     }
@@ -578,10 +580,12 @@ final class Start extends FrameLayout {
         row(R.drawable.ic_search, "Search", b.engineName(), true, () -> show(Page.SEARCH));
         row(R.drawable.ic_shield, "Blocking", b.dns().name() + (b.adblock().enabled() ? " · ads blocked" : ""),
                 true, () -> show(Page.BLOCKING));
-        row(R.drawable.ic_desktop, "Sites", BrowserActivity.MODES[b.mode()] + " mode", true, () -> show(Page.SITES));
+        row(R.drawable.ic_desktop, "Sites", b.lighterPages() ? "Lighter pages" : null, true, () -> show(Page.SITES));
         row(Ui.light ? R.drawable.ic_sun : R.drawable.ic_moon, "Appearance", (Ui.light ? "Light" : "Dark") + " · "
                 + BACKGROUNDS[background()], true, () -> show(Page.LOOK));
         row(R.drawable.ic_update, "Updates", updateSummary(), true, () -> show(Page.UPDATES));
+        boolean ready = b.isDefaultBrowser() && b.micAllowed() && b.updater().canInstall();
+        row(R.drawable.ic_check, "Setup", ready ? "All set" : "Needs attention", true, () -> show(Page.WELCOME));
     }
 
     private void backToSettings(String name) {
@@ -630,12 +634,8 @@ final class Start extends FrameLayout {
 
     private void fillSitesSettings() {
         backToSettings("Sites");
-        choice("Browsing mode", BrowserActivity.MODES, b.mode(), b::setMode);
-        note(b.mode() == BrowserActivity.TV
-                ? "TV mode asks sites for their phone or TV layout, makes text a little larger and shows a "
-                + "glow around what has focus. The desktop button in the bar switches one site to Desktop."
-                : "Desktop mode asks sites for their computer layout, at normal text size. The desktop button "
-                + "in the bar switches one site back to TV mode.");
+        note("Sites open in their full desktop layout, fitted to the screen. If one still won't work, the "
+                + "monitor button in the bar opens it as Chrome on Windows.");
         toggle("Lighter pages", b.lighterPages(), on -> b.toggleLighterPages());
         note("Makes busy sites, like streams, smoother on a TV: switches off background blur and pauses "
                 + "a page's looping animations while a video plays.");
@@ -651,7 +651,8 @@ final class Start extends FrameLayout {
                 + "which app to use.");
     }
 
-    int background() { return Math.floorMod(sp.getInt("start_bg", 0), BACKGROUNDS.length); }
+    /** Frosted by default. */
+    int background() { return Math.floorMod(sp.getInt("start_bg", 1), BACKGROUNDS.length); }
 
     private void fillLook() {
         backToSettings("Appearance");
@@ -661,8 +662,7 @@ final class Start extends FrameLayout {
             sp.edit().putInt("start_bg", i).apply();
             loadPhoto();
         });
-        note("Frosted TV photo blurs the picture on BeeshTV Launcher's Home the way the launcher blurs "
-                + "its panels.");
+        note("Frosted TV Home blurs your TV's Home screen behind the browser, as if it were glass.");
     }
 
     String updateSummary() {
@@ -698,6 +698,35 @@ final class Start extends FrameLayout {
     void onUpdateChanged() {
         if (page == Page.UPDATES || page == Page.SETTINGS) show(page);
         else fillNav();
+    }
+
+    // ---- First launch
+
+    /** What the browser needs, each ticked off as it's allowed; Done (or Back) goes on to Home. */
+    private void fillWelcome() {
+        title("Welcome to BEESH Browser", null);
+        note("A few things to set up. Each opens the TV's own screen for it; press Back to come back here.");
+        gap();
+        boolean def = b.isDefaultBrowser(), mic = b.micAllowed(), upd = b.updater().canInstall();
+        step(R.drawable.ic_home, "Open web links here", "Make BEESH your default browser", def, b::askDefaultBrowser);
+        step(R.drawable.ic_mic, "Voice typing", "Allow the remote's microphone", mic, b::askMic);
+        step(R.drawable.ic_update, "Stay up to date", "Allow BEESH to install its own updates", upd,
+                () -> getContext().startActivity(b.updater().installPermissionScreen()));
+        gap();
+        row(0, def && mic && upd ? "Done" : "Skip for now", null, false, b::finishWelcome);
+    }
+
+    private void step(int icon, String label, String what, boolean done, Runnable ask) {
+        LinearLayout r = twoLine(label, done ? "Done" : what, false);
+        ImageView i = new ImageView(getContext());
+        i.setImageResource(done ? R.drawable.ic_check : R.drawable.ic_chevron);
+        i.setImageTintList(ColorStateList.valueOf(done ? Ui.TEXT : Ui.TEXT_3));
+        r.addView(i, lp(dp(18), dp(18), dp(12), 0, dp(4), 0));
+        ImageView lead = new ImageView(getContext());
+        lead.setImageResource(icon);
+        lead.setImageTintList(ColorStateList.valueOf(Ui.TEXT_2));
+        r.addView(lead, 0, lp(dp(18), dp(18), 0, 0, dp(14), 0));
+        if (!done) r.setOnClickListener(v -> ask.run());
     }
 
     // ---- Help and About
@@ -1019,7 +1048,7 @@ final class Start extends FrameLayout {
         // A veil over the photo so the text on it reads: dark, or pale in light mode.
         shade.setBackgroundColor(Ui.light ? 0xA6F5F2F1 : 0x73000000);
         io.execute(() -> {
-            Bitmap p = Backdrop.wallpaper(getContext(), true);
+            Bitmap p = Backdrop.homeScreen(getContext());
             main.post(() -> { if (background() != 0) photo.setImageBitmap(p); });
         });
     }

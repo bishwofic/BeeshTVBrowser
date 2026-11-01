@@ -173,6 +173,67 @@
     }
   }
 
+  // 6b. No gaps where ads were, as uBlock Origin does it: common ad containers are hidden, so is any
+  //     frame or image from a blocked ad server, and then the box around it too if nothing visible is
+  //     left inside (an empty card in a row closes up instead of staying blank).
+  if (window.BeeshTVInput && BeeshTVInput.adsOn && BeeshTVInput.adsOn(location.hostname)) {
+    var ADS = 'ins.adsbygoogle,.adsbygoogle,[id^="google_ads_iframe"],[id^="div-gpt-ad"],[id^="gpt-ad"],' +
+      '[id^="gpt_unit"],[data-google-query-id],[id^="aswift_"],[data-ad-slot],[data-ad-unit],[data-adunit],' +
+      '[data-ad-unit-path],amp-ad,amp-embed[type="taboola"],.ad-slot,.ad-container,.ad-wrapper,.ad-banner,' +
+      '.ad-unit,.ad-placeholder,.adsbox,.advertisement,.sponsored-ad,[id^="taboola-"],.trc_rbox_container,' +
+      '.OUTBRAIN,iframe[src*="googlesyndication"],iframe[src*="doubleclick"],iframe[src*="amazon-adsystem"]';
+    var adCss = document.createElement('style');
+    adCss.textContent = ADS + '{display:none!important}';
+    var addAdCss = function () { (document.head || document.documentElement).appendChild(adCss); };
+    if (document.documentElement) addAdCss(); else document.addEventListener('DOMContentLoaded', addAdCss);
+
+    var hostOf = function (u) { try { return new URL(u, location.href).hostname; } catch (e) { return ''; } };
+    var seen = {};
+    var blockedSrc = function (el) {
+      var src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+      if (!src || src.indexOf('data:') === 0 || src.indexOf('about:') === 0) return false;
+      var h = hostOf(src);
+      if (!h || h === location.hostname) return false;
+      if (!(h in seen)) seen[h] = BeeshTVInput.blocks('https://' + h + '/');
+      return seen[h];
+    };
+    var MEDIA = 'img,video,canvas,svg,picture,iframe,object,embed';
+    var empty = function (el) {
+      if ((el.innerText || '').trim()) return false;
+      var ms = el.querySelectorAll(MEDIA);
+      for (var i = 0; i < ms.length; i++) {
+        var m = ms[i];
+        if (m.dataset.beeshtvAd) continue;
+        var r = m.getBoundingClientRect();
+        if (r.width > 8 && r.height > 8) return false;
+      }
+      return true;
+    };
+    var collapse = function (el) {
+      if (el.dataset.beeshtvAd) return;
+      el.dataset.beeshtvAd = '1';
+      el.style.setProperty('display', 'none', 'important');
+      // Up to four boxes around it, while they hold nothing else you can see.
+      var p = el.parentElement;
+      for (var i = 0; i < 4 && p && p !== document.body && p !== document.documentElement; i++) {
+        if (!empty(p)) break;
+        p.dataset.beeshtvAd = '1';
+        p.style.setProperty('display', 'none', 'important');
+        p = p.parentElement;
+      }
+    };
+    var sweep = function () {
+      if (!document.body) return;
+      document.querySelectorAll(ADS).forEach(collapse);
+      document.querySelectorAll('iframe,img').forEach(function (el) { if (!el.dataset.beeshtvAd && blockedSrc(el)) collapse(el); });
+    };
+    var pending = null;
+    var later = function () { if (!pending) pending = setTimeout(function () { pending = null; sweep(); }, 400); };
+    document.addEventListener('DOMContentLoaded', sweep);
+    window.addEventListener('load', function () { sweep(); setTimeout(sweep, 1500); setTimeout(sweep, 4000); });
+    new MutationObserver(later).observe(document, { childList: true, subtree: true });
+  }
+
   // 7. YouTube's own ads (the ones inside videos), as Brave and uBlock Origin do it: the player is
   //    given its data with the ad schedule taken out, so no ad is ever set up. If one still starts, it
   //    is skipped to its end, muted, and the skip button pressed. Ad slots on the page are hidden.

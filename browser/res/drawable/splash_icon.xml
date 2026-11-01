@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The globe in the middle of the system splash's icon area (which crops to its inner two thirds). -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/mark"
+    android:inset="22%" />

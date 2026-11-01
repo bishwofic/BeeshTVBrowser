@@ -75,15 +75,12 @@ public class BrowserActivity extends Activity {
             {"Bing", "https://www.bing.com/search?q="},
             {"Brave", "https://search.brave.com/search?q="},
     };
-    /** How sites are asked for their layout: TV (phone or TV layout, larger text) or Desktop. */
-    static final String[] MODES = {"TV", "Desktop"};
-    static final int TV = 0, DESKTOP = 1;
     /** Text size in TV mode, as a percentage: readable from the couch without breaking layouts. */
     static final int TV_TEXT = 100;
     /** Width pages are laid out at (then fitted to the screen): a desktop layout in both modes. */
     static final int TV_WIDTH = 1280, DESKTOP_WIDTH = 1280;
     static final float[] ZOOMS = {0.5f, 0.67f, 0.75f, 0.9f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f};
-    static final int REQ_VOICE = 7, REQ_MIC = 8;
+    static final int REQ_VOICE = 7, REQ_MIC = 8, REQ_ROLE = 9;
     /** Each open page takes memory on a TV that has little; more than this and pages start reloading. */
     static final int MAX_TABS = 6;
     /** Hover is passed to the page at most this often while the pointer moves (players react to every move). */
@@ -153,6 +150,12 @@ public class BrowserActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         sp = getSharedPreferences("browser", MODE_PRIVATE);
+        // Once, from the version with a Browsing mode setting: every site back to TV mode.
+        if (!sp.getBoolean("modes_reset", false)) {
+            SharedPreferences.Editor e = sp.edit().remove("mode").remove("desktop_default").putBoolean("modes_reset", true);
+            for (String k : sp.getAll().keySet()) if (k.startsWith("desktop:")) e.remove(k);
+            e.apply();
+        }
         Ui.theme(sp.getBoolean("light", false));
         adblock = new AdBlock(this, sp);
         dns = new Dns(sp);
@@ -223,6 +226,7 @@ public class BrowserActivity extends Activity {
         setContentView(root);
 
         restoreTabs();
+        if (b == null) showSplash();
         String url = b == null ? urlFrom(getIntent()) : null;
         if (url != null) openFromOutside(url);
         else if (b != null && b.getBoolean("sheet", false) && !tab.empty()) {
@@ -232,6 +236,8 @@ public class BrowserActivity extends Activity {
         else if (b != null && b.getBoolean("on_start", true)) showStart(Start.Page.valueOf(b.getString("page", "HOME")));
         else if (b != null && !tab.empty()) hideStart();
         else showStart(Start.Page.HOME);
+        // First time: the setup list (default browser, microphone, updates) before anything else.
+        if (b == null && url == null && !sp.getBoolean("welcomed", false)) showStart(Start.Page.WELCOME);
     }
 
     @Override
@@ -405,10 +411,10 @@ public class BrowserActivity extends Activity {
         InputBridge(Tab t) { tab = t; }
         @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
         @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
-        /** Asked by YouTube pages as they start: block its in-video ads? */
+        /** Asked by pages as they start: hide ad boxes (and on YouTube, its in-video ads)? */
         @JavascriptInterface public boolean adsOn(String host) {
             String h = host == null ? null : History.hostOf("https://" + host);
-            return adblock.enabled() && !adsAllowed(h) && !adsAllowed("youtube.com");
+            return adblock.enabled() && !adsAllowed(h);
         }
 
         /** Asked by the page as it starts: how wide to lay itself out before fitting to the screen. */
@@ -876,17 +882,77 @@ public class BrowserActivity extends Activity {
         for (Tab t : tabs) if (t.web != null) installFrameFix(t, t.web);
     }
 
-    int mode() { return sp.getInt("mode", sp.getBoolean("desktop_default", false) ? DESKTOP : TV); }
-    boolean desktopDefault() { return mode() == DESKTOP; }
+    /**
+     * Every site starts in TV mode, which already gets the desktop layout. Desktop mode (Chrome on
+     * Windows) is only for the odd site that insists, switched per site from the bar.
+     */
+    boolean desktopDefault() { return false; }
 
-    /** Tabs, history and sites stay as they are; open pages load again in the new mode. */
-    void setMode(int m) {
-        sp.edit().putInt("mode", m).apply();
-        for (Tab t : tabs) {
-            if (t.web == null || t.empty()) continue;
-            if (applyAgentFor(t.web, t.web.getUrl())) t.web.reload();
+    /**
+     * The globe and name on the dark background for a moment as the browser opens, fading into it,
+     * so the first frame is never a blank screen while the page engine starts.
+     */
+    private void showSplash() {
+        LinearLayout s = new LinearLayout(this);
+        s.setOrientation(LinearLayout.VERTICAL);
+        s.setGravity(Gravity.CENTER);
+        s.setBackgroundColor(0xFF0B0A0A);
+        s.setClickable(true);
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.drawable.mark);
+        mark.setImageTintList(ColorStateList.valueOf(0xFFF4F1F0));
+        s.addView(mark, new LinearLayout.LayoutParams(dp(72), dp(72)));
+        TextView name = Ui.text(this, 22, 500, 0xFFF4F1F0);
+        android.text.SpannableStringBuilder n = new android.text.SpannableStringBuilder("BEESH Browser");
+        n.setSpan(new android.text.style.ForegroundColorSpan(0xB3F4F1F0), 6, n.length(), 0);
+        name.setText(n);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(-2, -2);
+        np.topMargin = dp(18);
+        s.addView(name, np);
+        root.addView(s, new FrameLayout.LayoutParams(-1, -1));
+        mark.setScaleX(0.9f);
+        mark.setScaleY(0.9f);
+        mark.animate().scaleX(1f).scaleY(1f).setDuration(500).start();
+        main.postDelayed(() -> s.animate().alpha(0f).setDuration(320)
+                .withEndAction(() -> root.removeView(s)).start(), 700);
+    }
+
+    // ---- standalone setup: default browser, microphone, updates
+
+    boolean isDefaultBrowser() {
+        android.app.role.RoleManager rm = getSystemService(android.app.role.RoleManager.class);
+        if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
+            return rm.isRoleHeld(android.app.role.RoleManager.ROLE_BROWSER);
         }
-        refreshBar();
+        android.content.pm.ResolveInfo r = getPackageManager().resolveActivity(
+                new Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")), android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+        return r != null && getPackageName().equals(r.activityInfo.packageName);
+    }
+
+    void askDefaultBrowser() {
+        android.app.role.RoleManager rm = getSystemService(android.app.role.RoleManager.class);
+        try {
+            if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
+                startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_BROWSER), REQ_ROLE);
+                return;
+            }
+        } catch (RuntimeException ignored) { }
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
+        } catch (RuntimeException e) {
+            toast("Choose BEESH Browser and Always the next time an app opens a web page");
+        }
+    }
+
+    boolean micAllowed() {
+        return checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    void askMic() { requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC); }
+
+    void finishWelcome() {
+        sp.edit().putBoolean("welcomed", true).apply();
+        start.show(Start.Page.HOME);
     }
 
     void exit() {
@@ -1186,7 +1252,7 @@ public class BrowserActivity extends Activity {
             root.draw(c);
             if (k) keyboard.setVisibility(View.VISIBLE);
             if (cur) cursor.setVisibility(View.VISIBLE);
-            android.graphics.Bitmap out = Backdrop.blur(small, 0.5f);
+            android.graphics.Bitmap out = Backdrop.blur(small, 0.25f);
             small.recycle();
             return out;
         } catch (RuntimeException | OutOfMemoryError e) {
@@ -1475,6 +1541,7 @@ public class BrowserActivity extends Activity {
     public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
         super.onRequestPermissionsResult(req, perms, results);
         if (req != REQ_MIC) return;
+        if (start.page() == Start.Page.WELCOME) start.show(Start.Page.WELCOME);
         java.util.function.Consumer<String> then = pendingVoice;
         pendingVoice = null;
         if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED && then != null) {
@@ -1500,6 +1567,7 @@ public class BrowserActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int result, Intent data) {
         super.onActivityResult(req, result, data);
+        if (req == REQ_ROLE) { if (start.page() == Start.Page.WELCOME) start.show(Start.Page.WELCOME); return; }
         if (req != REQ_VOICE || result != RESULT_OK || data == null) return;
         ArrayList<String> said = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
         if (said != null && !said.isEmpty()) load(searchOrUrl(said.get(0)));

@@ -16,6 +16,23 @@ import java.io.InputStream;
 final class Backdrop {
     static final Uri WALLPAPER = Uri.parse("content://com.beeshtv.home.share/wallpaper");
     static final Uri WEATHER = Uri.parse("content://com.beeshtv.home.share/weather");
+    static final Uri SCREEN = Uri.parse("content://com.beeshtv.home.share/screen");
+
+    /**
+     * The TV's Home screen as it last looked (apps, clock and photo), frosted: what you'd see through
+     * the browser if it were glass. Falls back to Home's photo when the launcher hasn't saved one.
+     */
+    static Bitmap homeScreen(Context c) {
+        try (InputStream in = c.getContentResolver().openInputStream(SCREEN)) {
+            Bitmap small = in == null ? null : BitmapFactory.decodeStream(in);
+            if (small != null) {
+                Bitmap out = blur(small, 0f);
+                small.recycle();
+                return out;
+            }
+        } catch (Exception | OutOfMemoryError ignored) { }
+        return wallpaper(c, true);
+    }
 
     static final class Weather {
         int temp, code;
@@ -42,7 +59,8 @@ final class Backdrop {
             Bitmap soft = soften(full);
             full.recycle();
             if (!heavy) return soft;
-            Bitmap small = Bitmap.createScaledBitmap(soft, soft.getWidth() / 4, soft.getHeight() / 4, true);
+            // Half again as sharp as the launcher's own frost: a softer blur, the photo still recognisable.
+            Bitmap small = Bitmap.createScaledBitmap(soft, soft.getWidth() / 2, soft.getHeight() / 2, true);
             soft.recycle();
             Bitmap out = blur(small, 0f);
             small.recycle();
