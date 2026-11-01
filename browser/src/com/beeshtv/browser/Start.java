@@ -166,6 +166,7 @@ final class Start extends FrameLayout {
         search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         search.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         search.setOnEditorActionListener((v, a, e) -> { go(); return true; });
+        b.attachKeyboard(search, () -> { if (adding) stopAdding(); });
         box.addView(search, new LinearLayout.LayoutParams(0, -1, 1f));
         ImageView mic = iconButton(R.drawable.ic_mic, "Voice search", v -> b.voice());
         box.addView(mic, lp(dp(36), dp(36), 0, 0, dp(4), 0));
@@ -274,6 +275,8 @@ final class Start extends FrameLayout {
         navRow(R.drawable.ic_settings, "Settings", null, Page.SETTINGS);
         navRow(R.drawable.ic_help, "Help", null, Page.HELP);
         navRow(R.drawable.ic_info, "About", null, Page.ABOUT);
+        View exit = navItem(R.drawable.ic_exit, "Exit", null, false);
+        exit.setOnClickListener(v -> b.exit());
     }
 
     private void navRow(int icon, String label, String count, Page target) {
@@ -325,7 +328,29 @@ final class Start extends FrameLayout {
         String t = search.getText().toString().trim();
         if (t.isEmpty()) return;
         search.setText("");
+        if (adding) {
+            String url = t.matches("(?i)^https?://.*") ? t : "https://" + t;
+            String host = History.hostOf(url);
+            stopAdding();
+            getRootView().requestFocus();
+            if (host != null) pin(nameOf(host), url);
+            return;
+        }
         b.open(t);
+    }
+
+    /** Add site: the search box takes the address for a moment, so it's typed on our keyboard too. */
+    private boolean adding;
+
+    private void add() {
+        adding = true;
+        search.setHint("Web address to add, like youtube.com");
+        search.requestFocus();
+    }
+
+    private void stopAdding() {
+        adding = false;
+        search.setHint("Search or type a web address");
     }
 
     private List<String[]> pinned() {
@@ -397,25 +422,6 @@ final class Start extends FrameLayout {
     private static String nameOf(String host) {
         String n = host.contains(".") ? host.substring(0, host.indexOf('.')) : host;
         return n.isEmpty() ? host : Character.toUpperCase(n.charAt(0)) + n.substring(1);
-    }
-
-    private void add() {
-        EditText field = new EditText(getContext());
-        field.setSingleLine(true);
-        field.setHint("Web address, like youtube.com");
-        field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        new AlertDialog.Builder(getContext(), Ui.dialog())
-                .setTitle("Add a site to Home")
-                .setView(field)
-                .setPositiveButton("Add", (dlg, w) -> {
-                    String t = field.getText().toString().trim();
-                    if (t.isEmpty()) return;
-                    String url = t.matches("(?i)^https?://.*") ? t : "https://" + t;
-                    String host = History.hostOf(url);
-                    if (host != null) pin(nameOf(host), url);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
     }
 
     private void pin(String name, String url) {

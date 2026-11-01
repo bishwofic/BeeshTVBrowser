@@ -51,6 +51,20 @@
     window.open = function () { return standIn; };
   }
 
-  // 3. Read as a regular browser to players that check.
+  // 3. A text field took focus (in any frame): BeeshTV shows its own keyboard, since the TV's can't
+  //    attach to the page. Leaving the field puts it away.
+  function typable(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    if (el.tagName === 'TEXTAREA') return !el.readOnly && !el.disabled;
+    if (el.tagName !== 'INPUT' || el.readOnly || el.disabled) return false;
+    return !/^(button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(el.type || '');
+  }
+  if (window.BeeshTVInput) {
+    document.addEventListener('focusin', function (e) { if (typable(e.target)) BeeshTVInput.focus(); }, true);
+    document.addEventListener('focusout', function (e) { if (typable(e.target)) BeeshTVInput.blur(); }, true);
+  }
+
+  // 4. Read as a regular browser to players that check.
   try { Object.defineProperty(navigator, 'webdriver', { get: function () { return false; } }); } catch (e) {}
 })();

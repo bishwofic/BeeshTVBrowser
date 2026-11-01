@@ -23,7 +23,10 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.KeyCharacterMap;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.webkit.JavascriptInterface;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
@@ -106,6 +109,9 @@ public class BrowserActivity extends Activity {
 
     private FrameLayout root, pages;
     private Start start;
+    private Keyboard keyboard;
+    /** A keyboard with letters was typed on; ours stays away until it's disconnected. */
+    private boolean physicalKeyboard;
     private CursorView cursor;
     private LinearLayout bar;
     private EditText address;
@@ -153,6 +159,8 @@ public class BrowserActivity extends Activity {
 
         // Pages under the bar; the start screen over both; the pointer over everything.
         int barTop = dp(16), barH = dp(56), pageTop = barTop + barH + dp(12);
+        keyboard = new Keyboard(this);
+        keyboard.setVisibility(View.GONE);
         root = new FrameLayout(this);
         root.setBackgroundColor(Ui.BG);
         // Holds focus while the pointer is in charge, so no field takes the D-pad.
@@ -176,8 +184,17 @@ public class BrowserActivity extends Activity {
                 else mouse(MotionEvent.ACTION_SCROLL, dx, dy);
             }
         });
+        root.addView(keyboard, lp(Math.min(dp(820), getResources().getDisplayMetrics().widthPixels - dp(48)), -2,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, 0, 0, dp(20)));
         int c = CursorView.sizePx(this);
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
+        // A keyboard going away (unplugged, switched off) brings ours back.
+        getSystemService(android.hardware.input.InputManager.class).registerInputDeviceListener(
+                new android.hardware.input.InputManager.InputDeviceListener() {
+                    @Override public void onInputDeviceAdded(int id) { }
+                    @Override public void onInputDeviceChanged(int id) { }
+                    @Override public void onInputDeviceRemoved(int id) { physicalKeyboard = false; }
+                }, main);
         setContentView(root);
 
         restoreTabs();
@@ -333,8 +350,27 @@ public class BrowserActivity extends Activity {
 
     // ---------------------------------------------------------------- a page
 
+    /**
+     * A page that never asks the TV for its keyboard: typing reaches it as key presses, from a real
+     * keyboard or from ours (shown when a field on the page takes focus).
+     */
+    static final class PageView extends WebView {
+        PageView(android.content.Context c) { super(c); }
+        @Override public InputConnection onCreateInputConnection(EditorInfo out) { return null; }
+        @Override public boolean onCheckIsTextEditor() { return false; }
+    }
+
+    /** Called by assets/frames.js when a text field on the page gains or loses focus. */
+    final class InputBridge {
+        private final Tab tab;
+        InputBridge(Tab t) { tab = t; }
+        @JavascriptInterface public void focus() { main.post(() -> pageFieldFocused(tab, true)); }
+        @JavascriptInterface public void blur() { main.post(() -> pageFieldFocused(tab, false)); }
+    }
+
     private WebView buildWebView(Tab t) {
-        WebView w = new WebView(this);
+        WebView w = new PageView(this);
+        w.addJavascriptInterface(new InputBridge(t), "BeeshTVInput");
         w.setBackgroundColor(Ui.BG);
         w.setFocusable(true);
         w.setVerticalScrollBarEnabled(false);
@@ -642,6 +678,11 @@ public class BrowserActivity extends Activity {
         refreshBar();
     }
 
+    void exit() {
+        saveTabs();
+        finishAndRemoveTask();
+    }
+
     /** Dark or light: everything is drawn again in the new colours, on the same page. */
     void setLight(boolean light) {
         sp.edit().putBoolean("light", light).apply();
@@ -796,6 +837,17 @@ public class BrowserActivity extends Activity {
             if (code == KeyEvent.KEYCODE_BACK) { if (!down) web.evaluateJavascript("document.exitFullscreen()", null); return true; }
             return super.dispatchKeyEvent(e);
         }
+        View focused = getCurrentFocus();
+        // A keyboard with letters: it types into the field, and ours steps aside. On Home, typing
+        // starts a search.
+        if (down && isLetterFromKeyboard(e)) {
+            physicalKeyboard = true;
+            if (keyboard.open()) keyboard.close();
+            if (onStart && !(focused instanceof EditText)) start.focusSearch();
+            return super.dispatchKeyEvent(e);
+        }
+        if (keyboard.open() && keyboard.key(e)) return true;
+
         if (code == KeyEvent.KEYCODE_MENU) {
             if (!down) {
                 if (onStart) start.focusSearch();
@@ -864,6 +916,90 @@ public class BrowserActivity extends Activity {
         return super.dispatchKeyEvent(e);
     }
 
+    // ---------------------------------------------------------------- typing
+
+    private static boolean isLetterFromKeyboard(KeyEvent e) {
+        InputDevice d = e.getDevice();
+        return d != null && !d.isVirtual() && d.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+                && Character.isLetter(e.getUnicodeChar());
+    }
+
+    /** Our fields use our keyboard, never the TV's. Called for the address and the fields on Home. */
+    void attachKeyboard(EditText field, Runnable onLeave) {
+        field.setShowSoftInputOnFocus(false);
+        field.setOnFocusChangeListener((v, has) -> {
+            if (has && !physicalKeyboard) keyboard.show(fieldTarget(field));
+            if (!has) {
+                if (keyboard.open() && keyboard.getTag() == field) keyboard.close();
+                if (onLeave != null) onLeave.run();
+            }
+        });
+        // Clicking a field that already has focus brings the keyboard back after it was put away.
+        field.setOnClickListener(v -> { if (!physicalKeyboard && !keyboard.open()) keyboard.show(fieldTarget(field)); });
+    }
+
+    private Keyboard.Target fieldTarget(EditText f) {
+        keyboard.setTag(f);
+        return new Keyboard.Target() {
+            @Override public void type(String text) {
+                int a = Math.max(0, Math.min(f.getSelectionStart(), f.getSelectionEnd()));
+                int b = Math.max(0, Math.max(f.getSelectionStart(), f.getSelectionEnd()));
+                f.getText().replace(a, b, text);
+            }
+            @Override public void backspace() {
+                int a = Math.min(f.getSelectionStart(), f.getSelectionEnd()), b = Math.max(f.getSelectionStart(), f.getSelectionEnd());
+                if (a < 0) return;
+                if (a != b) f.getText().delete(a, b);
+                else if (a > 0) f.getText().delete(a - 1, a);
+            }
+            @Override public void enter() { f.onEditorAction(EditorInfo.IME_ACTION_GO); }
+            @Override public void closed() {
+                keyboard.setTag(null);
+                if (!f.hasFocus()) return;
+                if (f == address) exitBar(); else root.requestFocus();
+            }
+        };
+    }
+
+    private final Runnable pageFieldLeft = () -> { if (keyboard.open() && keyboard.getTag() == this.pageTarget) keyboard.close(); };
+
+    /** A field on the page took focus: our keyboard comes up (not over our own screens). */
+    private void pageFieldFocused(Tab t, boolean has) {
+        if (t != tab) return;
+        main.removeCallbacks(pageFieldLeft);
+        if (!has) {
+            // Pages often redraw a field as you type; only a real move away closes the keyboard.
+            main.postDelayed(pageFieldLeft, 300);
+            return;
+        }
+        if (physicalKeyboard || start.getVisibility() == View.VISIBLE || fullscreen != null) return;
+        keyboard.show(pageTarget);
+        keyboard.setTag(pageTarget);
+    }
+
+    /** Typing on the page arrives as key presses, the way a real keyboard's would. */
+    private final Keyboard.Target pageTarget = new Keyboard.Target() {
+        private final KeyCharacterMap keys = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+
+        @Override public void type(String text) {
+            KeyEvent[] events = keys.getEvents(text.toCharArray());
+            if (events != null) {
+                for (KeyEvent ev : events) web.dispatchKeyEvent(ev);
+            } else {
+                web.evaluateJavascript("document.execCommand('insertText',false," + org.json.JSONObject.quote(text) + ")", null);
+            }
+        }
+        @Override public void backspace() { tap(KeyEvent.KEYCODE_DEL); }
+        @Override public void enter() { tap(KeyEvent.KEYCODE_ENTER); keyboard.close(); }
+        @Override public void closed() { keyboard.setTag(null); }
+
+        private void tap(int code) {
+            long now = SystemClock.uptimeMillis();
+            web.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0));
+            web.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0));
+        }
+    };
+
     // ---------------------------------------------------------------- the bar
 
     private View buildBar() {
@@ -894,6 +1030,7 @@ public class BrowserActivity extends Activity {
         address.setCompoundDrawablesRelative(Ui.icon(this, R.drawable.ic_search, Ui.TEXT_3, 16), null, null, null);
         address.setCompoundDrawablePadding(dp(10));
         address.setBackground(Ui.surface(this, 10, Ui.FROST));
+        attachKeyboard(address, null);
         address.setOnEditorActionListener((v, action, ev) -> {
             String t = address.getText().toString();
             if (t.trim().isEmpty()) return true;
@@ -984,6 +1121,7 @@ public class BrowserActivity extends Activity {
         // Nothing keeps playing behind it.
         if (web != null) web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
         exitBar();
+        keyboard.close();
         if (start.getVisibility() != View.VISIBLE) {
             start.setVisibility(View.VISIBLE);
             start.setAlpha(0f);
@@ -997,6 +1135,7 @@ public class BrowserActivity extends Activity {
     }
 
     private void hideStart() {
+        keyboard.close();
         start.setVisibility(View.GONE);
         pages.setVisibility(View.VISIBLE);
         hovered = null;

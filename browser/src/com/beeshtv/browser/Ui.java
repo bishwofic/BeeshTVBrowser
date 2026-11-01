@@ -127,6 +127,7 @@ final class Ui {
         s.addState(new int[]{android.R.attr.state_pressed}, fill(c, radiusDp, HOVER));
         s.addState(new int[]{android.R.attr.state_hovered}, fill(c, radiusDp, HOVER));
         s.addState(new int[]{android.R.attr.state_focused}, fill(c, radiusDp, HOVER));
+        s.addState(new int[]{android.R.attr.state_activated}, fill(c, radiusDp, HOVER));
         s.addState(new int[]{android.R.attr.state_selected}, fill(c, radiusDp, SELECTED));
         s.addState(new int[]{}, fill(c, radiusDp, rest));
         s.setEnterFadeDuration(90);
