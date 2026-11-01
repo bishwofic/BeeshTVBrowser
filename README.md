@@ -38,9 +38,10 @@ pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but wo
   [Steven Black's hosts list](https://github.com/StevenBlack/hosts) (about 80,000 ad and malware hosts),
   refreshed weekly. The bar shows how many requests were blocked on the page, and the shield turns
   blocking off for one site that won't work with it.
-- **No "turn off your ad blocker" walls.** The usual detector scripts are told there's no ad blocker,
-  and a wall that shows anyway is taken off the page, with its dimmed backdrop, so you can scroll and
-  read again.
+- **No "turn off your ad blocker" walls**, on every site. Sites test for an ad blocker by loading a
+  well-known ad script; that test passes here (with nothing loaded, so still no ads), even when it's
+  the TV's own DNS doing the blocking. The usual detector scripts are told there's no ad blocker, and
+  a wall that shows anyway is taken off the page, with its dimmed backdrop, so you can scroll again.
 - **Video players that just play.** Players inside frames often stop with "sandboxed iframe" or
   "disable your popup blocker" messages. Frames are never sandboxed, pop-ups get a harmless stand-in
   instead of a window, and the browser doesn't tell sites it's an app (no X-Requested-With header).

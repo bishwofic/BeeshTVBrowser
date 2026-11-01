@@ -194,6 +194,53 @@
     }
   }
 
+  // 4b. Ad-blocker tests pass. Sites test for one by asking for a well-known ad script and showing a
+  //     wall if that fails, and it fails here whether the browser or the TV's own DNS blocked it. For
+  //     those few ad hosts a failure is turned into an empty "loaded", so the test passes and still no
+  //     ad shows. Requests that do get through are left as they are.
+  var BAIT = /(^|\.)(googlesyndication\.com|doubleclick\.net|googletagservices\.com|googleadservices\.com|adservice\.google\.[a-z.]+|amazon-adsystem\.com|adnxs\.com|pubmatic\.com|carbonads\.(com|net)|buysellads\.com|popads\.net|propellerads\.com)$/i;
+  var isBait = function (url) {
+    try { return BAIT.test(new URL(url, location.href).hostname); } catch (e) { return false; }
+  };
+  var seemLoaded = function (url) {
+    if (/adsbygoogle/.test(url)) {
+      try { window.adsbygoogle = window.adsbygoogle || []; window.adsbygoogle.loaded = true; } catch (e) {}
+    }
+  };
+  var probeFetch = window.fetch;
+  if (probeFetch) window.fetch = function (input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    var p = probeFetch.apply(this, arguments);
+    if (!isBait(url)) return p;
+    return p.catch(function () { seemLoaded(url); return new Response('', { status: 200, statusText: 'OK' }); });
+  };
+  var probeOpen = XMLHttpRequest.prototype.open, probeSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this.__beeshtvBait = isBait(url) ? String(url) : null;
+    return probeOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function () {
+    var url = this.__beeshtvBait;
+    if (!url) return probeSend.apply(this, arguments);
+    var x = this, as = { readyState: 4, status: 200, statusText: 'OK', responseText: '', response: '', responseURL: url };
+    Object.keys(as).forEach(function (k) {
+      try { Object.defineProperty(x, k, { value: as[k], configurable: true }); } catch (e) {}
+    });
+    setTimeout(function () {
+      ['readystatechange', 'load', 'loadend'].forEach(function (t) { x.dispatchEvent(new Event(t)); });
+    }, 10);
+  };
+  // A <script> or picture from those hosts that failed to load reports "load" instead of "error".
+  window.addEventListener('error', function (e) {
+    var el = e.target;
+    if (!el || el === window || !el.tagName) return;
+    var src = el.src || el.href;
+    if (!src || !isBait(src)) return;
+    e.stopImmediatePropagation();
+    seemLoaded(src);
+    setTimeout(function () { el.dispatchEvent(new Event('load')); }, 0);
+  }, true);
+
   // 5. Lighter pages (BrowserActivity sets __beeshtvLight): a TV draws every page effect itself, every
   //    frame. Backdrop blur, the costliest, is switched off; and while a video plays, the page's looping
   //    decorations (spinners, carousels, pulses) are paused and its blurred pictures drawn sharp, so
@@ -359,10 +406,11 @@
     new MutationObserver(later).observe(document, { childList: true, subtree: true });
   }
 
-  // 6c. "Turn off your ad blocker" walls, with blocking on for the site. The usual detector scripts are
-  //     answered "no ad blocker"; a wall that shows anyway (a fixed box over the page that talks about
-  //     ad blockers) is taken off, with its dimmed backdrop, and the page can scroll again.
-  if (window.BeeshTVInput && BeeshTVInput.adsOn && BeeshTVInput.adsOn(location.hostname)) {
+  // 6c. "Turn off your ad blocker" walls, on every site: with the shield off too, since the TV's own DNS
+  //     may be what the site noticed. The usual detector scripts are answered "no ad blocker"; a wall
+  //     that shows anyway (a fixed box over the page that talks about ad blockers) is taken off, with
+  //     its dimmed backdrop, and the page can scroll again.
+  {
     var calm = function () {
       var self = {
         onDetected: function () { return self; },
