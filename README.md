@@ -7,6 +7,12 @@ the address, voice search, ad blocking, desktop site and zoom.
 Built on the TV's own Android System WebView (Chromium), so pages render like they do in Chrome. It
 pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but works on its own.
 
+![Home page, dark and frosted over the TV's Home screen](docs/home.jpg)
+
+| First run | Appearance | Keyboard, in light mode |
+|---|---|---|
+| ![First-run setup](docs/setup.jpg) | ![Appearance settings](docs/settings.jpg) | ![The on-screen keyboard](docs/keyboard.jpg) |
+
 ## Features
 
 - **A home page** on the same photo as your TV's Home (from BEESH Launcher, blurred the way the
