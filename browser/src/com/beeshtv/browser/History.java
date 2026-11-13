@@ -72,6 +72,33 @@ final class History {
         return out;
     }
 
+    /**
+     * Pages for what's being typed, as {label, address}: sites whose name starts with it first, then
+     * addresses and titles that contain it, newest first, one per page.
+     */
+    List<String[]> match(String typed, int n) {
+        List<String[]> out = new ArrayList<>();
+        String q = typed == null ? "" : typed.trim().toLowerCase(java.util.Locale.ROOT);
+        if (q.isEmpty() || q.startsWith("http") && q.length() < 9) return out;
+        q = q.replaceFirst("^https?://", "").replaceFirst("^www\\.", "");
+        Set<String> seen = new LinkedHashSet<>();
+        for (int pass = 0; pass < 3 && out.size() < n; pass++) {
+            for (Entry e : items) {
+                String h = hostOf(e.url), u = e.url.toLowerCase(java.util.Locale.ROOT);
+                if (h == null) continue;
+                boolean hit = pass == 0 ? h.startsWith(q)
+                        : pass == 1 ? u.replaceFirst("^https?://(www\\.)?", "").contains(q)
+                        : e.title != null && e.title.toLowerCase(java.util.Locale.ROOT).contains(q);
+                String key = u.replaceFirst("/$", "");
+                if (!hit || !seen.add(key)) continue;
+                String title = e.title == null || e.title.isEmpty() ? h : e.title;
+                out.add(new String[]{title.equals(h) ? h : title + "  ·  " + h, e.url});
+                if (out.size() == n) break;
+            }
+        }
+        return out;
+    }
+
     /** Second-level labels under which country domains put their sites (bbc.co.uk, abc.net.au). */
     private static final java.util.Set<String> SECOND = new java.util.HashSet<>(java.util.Arrays.asList(
             "co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"));

@@ -12,8 +12,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -22,6 +21,9 @@ import java.util.concurrent.Executors;
  * once a week, swaps in two public lists merged: Steven Black's unified hosts (ads and malware) and
  * AdGuard's DNS filter (ads, trackers, analytics), together well over 100,000 hosts. A host is
  * blocked when it or any parent domain is listed.
+ *
+ * The hosts are kept as a sorted array of 64-bit hashes, not as strings: 260,000 hosts take 2 MB this
+ * way instead of about 30 MB of strings in a set, on a TV with under 2 GB for everything.
  */
 final class AdBlock {
     static final String[] LISTS = {
@@ -35,7 +37,8 @@ final class AdBlock {
     private final Context app;
     private final SharedPreferences sp;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    private volatile Set<String> hosts = new HashSet<>();
+    /** Sorted, no repeats. */
+    private volatile long[] hosts = new long[0];
     private volatile boolean fetching;
 
     AdBlock(Context c, SharedPreferences sp) {
@@ -47,21 +50,33 @@ final class AdBlock {
     boolean enabled() { return sp.getBoolean("adblock", true); }
     void setEnabled(boolean v) { sp.edit().putBoolean("adblock", v).apply(); }
 
-    int size() { return hosts.size(); }
+    int size() { return hosts.length; }
     long updatedAt() { return sp.getLong("adblock_at", 0); }
 
     /** Whether a request to this host should be dropped. */
     boolean blocks(String host) {
         if (host == null || !enabled()) return false;
-        Set<String> h = hosts;
+        long[] h = hosts;
+        if (h.length == 0) return false;
         String name = host.toLowerCase(java.util.Locale.ROOT);
+        int from = 0;
         while (true) {
-            if (h.contains(name)) return true;
-            int dot = name.indexOf('.');
+            if (Arrays.binarySearch(h, hash(name, from)) >= 0) return true;
+            int dot = name.indexOf('.', from);
             // Stop before the bare top-level domain ("com").
             if (dot < 0 || name.indexOf('.', dot + 1) < 0) return false;
-            name = name.substring(dot + 1);
+            from = dot + 1;
         }
+    }
+
+    /** 64-bit FNV-1a of name from index from on: one in billions of hosts could share another's. */
+    private static long hash(String name, int from) {
+        long x = 0xcbf29ce484222325L;
+        for (int i = from; i < name.length(); i++) {
+            x ^= name.charAt(i);
+            x *= 0x100000001b3L;
+        }
+        return x;
     }
 
     /** Fetches a fresh list once a week (or now, when forced), then switches to it. */
@@ -87,11 +102,12 @@ final class AdBlock {
                         }
                     }
                 }
-                Set<String> fresh = parse(new java.io.FileInputStream(part));
+                long[] fresh = parse(new java.io.FileInputStream(part));
                 // A list this short is an error page, not a hosts file.
-                if (fresh.size() < 1000) throw new IllegalStateException("short list");
+                if (fresh.length < 1000) throw new IllegalStateException("short list");
                 if (!part.renameTo(cache())) throw new IllegalStateException("rename");
                 hosts = fresh;
+                writeBin(fresh);
                 sp.edit().putLong("adblock_at", System.currentTimeMillis()).putInt("adblock_lists", LISTS_VERSION).apply();
             } catch (Exception e) {
                 part.delete();
@@ -104,11 +120,43 @@ final class AdBlock {
 
     private File cache() { return new File(app.getFilesDir(), "hosts.txt"); }
 
+    /** The list as it's kept in memory, so it loads at once: reading the text takes seconds on a TV. */
+    private File bin() { return new File(app.getFilesDir(), "hosts.bin"); }
+
     private void loadCached() {
         try {
-            File f = cache();
-            hosts = parse(f.exists() ? new java.io.FileInputStream(f) : app.getAssets().open("blocklist.txt"));
+            File f = cache(), b = bin();
+            if (b.exists() && (!f.exists() || b.lastModified() >= f.lastModified())) {
+                hosts = readBin(b);
+                return;
+            }
+            long[] h = parse(f.exists() ? new java.io.FileInputStream(f) : app.getAssets().open("blocklist.txt"));
+            hosts = h;
+            if (f.exists()) writeBin(h);
         } catch (Exception ignored) { }
+    }
+
+    private static long[] readBin(File f) throws java.io.IOException {
+        try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r");
+             java.nio.channels.FileChannel ch = r.getChannel()) {
+            java.nio.LongBuffer lb = ch.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, ch.size()).asLongBuffer();
+            long[] out = new long[lb.remaining()];
+            lb.get(out);
+            return out;
+        }
+    }
+
+    private void writeBin(long[] h) {
+        File tmp = new File(app.getFilesDir(), "hosts.bin.part");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(h.length * 8);
+            b.asLongBuffer().put(h);
+            out.write(b.array());
+        } catch (java.io.IOException e) {
+            tmp.delete();
+            return;
+        }
+        if (!tmp.renameTo(bin())) tmp.delete();
     }
 
     /**
@@ -116,8 +164,9 @@ final class AdBlock {
      * filter ("||ads.example.com^"); # and ! start comments, exceptions (@@) and anything with
      * wildcards or options are skipped.
      */
-    private static Set<String> parse(InputStream in) throws java.io.IOException {
-        Set<String> out = new HashSet<>(100_000);
+    private static long[] parse(InputStream in) throws java.io.IOException {
+        long[] out = new long[1 << 17];
+        int n = 0;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             for (String line; (line = r.readLine()) != null; ) {
                 int hash = line.indexOf('#');
@@ -132,9 +181,13 @@ final class AdBlock {
                 String host = parts.length > 1 ? parts[1] : parts[0];
                 if (host.equals("localhost") || host.endsWith(".localdomain") || host.equals("0.0.0.0")
                         || host.indexOf('.') < 0) continue;
-                out.add(host.toLowerCase(java.util.Locale.ROOT));
+                if (n == out.length) out = Arrays.copyOf(out, n * 2);
+                out[n++] = hash(host.toLowerCase(java.util.Locale.ROOT), 0);
             }
         }
-        return out;
+        Arrays.sort(out, 0, n);
+        int k = 0;
+        for (int i = 0; i < n; i++) if (k == 0 || out[i] != out[k - 1]) out[k++] = out[i];
+        return Arrays.copyOf(out, k);
     }
 }

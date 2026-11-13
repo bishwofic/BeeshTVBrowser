@@ -111,6 +111,24 @@ final class Backdrop {
     }
 
     /** The frosted-glass blur: three box passes at a sixteenth of the size, a little more colour. */
+    /** A light blur, for glass you can still see through: shapes and colours stay, fine detail softens. */
+    static Bitmap soft(Bitmap small) {
+        int w = small.getWidth(), h = small.getHeight();
+        int sw = Math.max(1, w / 2), sh = Math.max(1, h / 2);
+        Bitmap half = Bitmap.createScaledBitmap(small, sw, sh, true);
+        int[] px = new int[sw * sh];
+        half.getPixels(px, 0, sw, 0, 0, sw, sh);
+        half.recycle();
+        for (int pass = 0; pass < 2; pass++) {
+            boxBlur(px, sw, sh, 2, true);
+            boxBlur(px, sw, sh, 2, false);
+        }
+        Bitmap blurred = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
+        Bitmap out = Bitmap.createScaledBitmap(blurred, w, h, true);
+        blurred.recycle();
+        return out;
+    }
+
     static Bitmap blur(Bitmap small, float amount) {
         int w = small.getWidth(), h = small.getHeight();
         int sw = Math.max(1, w / 4), sh = Math.max(1, h / 4);

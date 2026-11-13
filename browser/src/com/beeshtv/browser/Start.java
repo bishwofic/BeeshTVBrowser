@@ -751,6 +751,7 @@ final class Start extends FrameLayout {
 
     String updateSummary() {
         Updater u = b.updater();
+        if (Updater.PLAY) return "From Google Play";
         switch (u.state()) {
             case CHECKING: return "Checking";
             case DOWNLOADING: return "Downloading " + u.progress() + "%";
@@ -766,6 +767,10 @@ final class Start extends FrameLayout {
         backToSettings("Updates");
         Updater u = b.updater();
         row(0, "Version", u.installed(), false, null);
+        if (Updater.PLAY) {
+            note("Google Play keeps BEESH Browser up to date, along with your other apps.");
+            return;
+        }
         row(0, "Status", updateSummary(), false, null);
         boolean newer = u.latest() != null && Updater.isNewer(u.latest(), u.installed());
         if (u.state() == Updater.State.READY || newer && u.state() == Updater.State.IDLE) {
@@ -794,7 +799,8 @@ final class Start extends FrameLayout {
         boolean def = b.isDefaultBrowser(), mic = b.micAllowed(), upd = b.updater().canInstall();
         step(R.drawable.ic_home, "Open web links here", "Make BEESH your default browser", def, b::askDefaultBrowser);
         step(R.drawable.ic_mic, "Voice typing", "Allow the remote's microphone", mic, b::askMic);
-        step(R.drawable.ic_update, "Stay up to date", "Allow BEESH to install its own updates", upd,
+        // From Google Play, Play does the updating; there's nothing to allow.
+        if (!Updater.PLAY) step(R.drawable.ic_update, "Stay up to date", "Allow BEESH to install its own updates", upd,
                 () -> getContext().startActivity(b.updater().installPermissionScreen()));
         gap();
         row(0, def && mic && upd ? "Done" : "Skip for now", null, false, b::finishWelcome);

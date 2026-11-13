@@ -32,6 +32,8 @@ import java.util.concurrent.Executors;
  * which asks once to confirm; updates have to be signed with the same key as the installed app.
  */
 final class Updater {
+    /** This build is the GitHub one; src-play/ has the Google Play build's Updater, which says true. */
+    static final boolean PLAY = false;
     static final String REPO = "bishwofic/BeeshTVBrowser";
     static final long CHECK_EVERY_MS = 6L * 60 * 60 * 1000;
     static final String ACTION_STATUS = "com.beeshtv.browser.INSTALL_STATUS";

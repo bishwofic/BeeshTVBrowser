@@ -11,6 +11,14 @@
   var type = document.contentType || '';
   if (/xml/.test(type) && !/xhtml/.test(type)) return;
 
+  // A video playing in this frame. Checks below that cost a layout or a look at every element wait
+  // while one does, so they never take a frame from the video.
+  var playingHere = function () {
+    var vs = document.getElementsByTagName('video');
+    for (var i = 0; i < vs.length; i++) if (!vs[i].paused && !vs[i].ended) return true;
+    return false;
+  };
+
   // 1. Never sandbox a frame: drop the attribute however it's set, before the frame loads.
   var setAttr = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name, value) {
@@ -40,6 +48,22 @@
       });
     });
   }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['sandbox'] });
+
+  // 2a. A pop-up the browser dropped looks, to the page, as if it opened: the page loses focus (as it
+  //     does when a new tab comes up over it) and gets it back a moment later. Ad scripts that wait to
+  //     see their window open before letting a player start see what they expect. The browser calls
+  //     __beeshtvPopped in the top frame; each frame passes it on to the frames inside it.
+  var popped = function () {
+    try { window.dispatchEvent(new Event('blur')); document.dispatchEvent(new Event('blur')); } catch (e) {}
+    setTimeout(function () { try { window.dispatchEvent(new Event('focus')); } catch (e) {} }, 300);
+    for (var i = 0; i < window.frames.length; i++) {
+      try { window.frames[i].postMessage({ beeshtvPopped: true }, '*'); } catch (e) {}
+    }
+  };
+  if (window.top === window) window.__beeshtvPopped = popped;
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.beeshtvPopped === true && e.source === window.parent) popped();
+  });
 
   // 2. Pop-ups: when blocking is on (BrowserActivity sets __beeshtvBlockPopups), window.open returns a
   //    stand-in window instead of opening one, so pages that check for a blocker don't stop.
@@ -254,11 +278,7 @@
     };
     if (document.documentElement) addStyle(); else document.addEventListener('DOMContentLoaded', addStyle);
     var paused = [];
-    var anyPlaying = function () {
-      var vs = document.getElementsByTagName('video');
-      for (var i = 0; i < vs.length; i++) if (!vs[i].paused && !vs[i].ended) return true;
-      return false;
-    };
+    var anyPlaying = playingHere;
     // Blur filters on the page (not the video's): taken out, keeping any other filter, and put back.
     var unblurred = [], lastLook = 0;
     var unblur = function () {
@@ -290,8 +310,8 @@
             if (t && t.iterations === Infinity && an.playState === 'running') { an.pause(); paused.push(an); }
           });
         }
-        // Looking at every element costs a moment, so it's done as the video starts and then rarely.
-        if (Date.now() - lastLook > 15000) { lastLook = Date.now(); unblur(); }
+        // Looking at every element costs a moment, so it's done once, as the video starts.
+        if (!lastLook) { lastLook = Date.now(); unblur(); }
       } else {
         paused.forEach(function (an) { try { an.play(); } catch (e) {} });
         paused = [];
@@ -303,7 +323,7 @@
       document.addEventListener(ev, function () { setTimeout(settle, 50); }, true);
     });
     // Decorations added later while the video plays are caught too.
-    setInterval(function () { if (paused.length || unblurred.length || anyPlaying()) settle(); }, 3000);
+    setInterval(function () { if (paused.length || unblurred.length || anyPlaying()) settle(); }, 6000);
   }
 
   // 6. Every site in its full desktop layout, fitted to the screen at 100%: the TV is only 960 points
@@ -400,10 +420,17 @@
       document.querySelectorAll('iframe,img').forEach(function (el) { if (!el.dataset.beeshtvAd && blockedSrc(el)) collapse(el); });
     };
     var pending = null;
-    var later = function () { if (!pending) pending = setTimeout(function () { pending = null; sweep(); }, 400); };
+    var later = function () {
+      if (!pending) pending = setTimeout(function () { pending = null; sweep(); }, playingHere() ? 5000 : 400);
+    };
     document.addEventListener('DOMContentLoaded', sweep);
     window.addEventListener('load', function () { sweep(); setTimeout(sweep, 1500); setTimeout(sweep, 4000); });
-    new MutationObserver(later).observe(document, { childList: true, subtree: true });
+    new MutationObserver(function (changes) {
+      for (var i = 0; i < changes.length; i++) {
+        var added = changes[i].addedNodes;
+        for (var j = 0; j < added.length; j++) if (added[j].nodeType === 1) { later(); return; }
+      }
+    }).observe(document, { childList: true, subtree: true });
   }
 
   // 6c. "Turn off your ad blocker" walls, on every site: with the shield off too, since the TV's own DNS
@@ -474,12 +501,13 @@
       });
       if (gone) unlock();
     };
-    // Often for the first minute (when walls appear), then now and then.
+    // Often for the first minute (when walls appear), then now and then; not while a video plays,
+    // since each look costs a layout.
     var looks = 0;
     var look = function () {
-      tearDown();
+      if (!playingHere()) tearDown();
       looks++;
-      setTimeout(look, looks < 40 ? 1500 : 5000);
+      setTimeout(look, looks < 40 ? 1500 : 20000);
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', look); else look();
   }

@@ -31,7 +31,9 @@ final class Keyboard extends FrameLayout {
 
     // Special keys.
     private static final String SHIFT = "⇧", BACK = "⌫", SYMBOLS = "#+=", LETTERS = "abc", SPACE = " ", GO = "Go",
-            HIDE = "hide", MIC = "mic";
+            HIDE = "hide", MIC = "mic", PHONE = "phone";
+    /** Keys of the suggestion strip: this, then the suggestion's place in the list. */
+    private static final String PICK = "\u0001";
 
     /** Sizes in Settings: key height and keyboard width in dp, and letter size in sp. */
     static final String[] SIZES = {"Small", "Medium", "Large"};
@@ -44,21 +46,20 @@ final class Keyboard extends FrameLayout {
             {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
             {"a", "s", "d", "f", "g", "h", "j", "k", "l", BACK},
             {SHIFT, "z", "x", "c", "v", "b", "n", "m", ".", "-"},
-            {SYMBOLS, ".com", "/", MIC, SPACE, "@", HIDE, GO},
+            {SYMBOLS, ".com", "/", MIC, PHONE, SPACE, "@", HIDE, GO},
     };
     private static final String[][] SYMBOL_ROWS = {
             {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
             {"!", "@", "#", "$", "%", "&", "*", "(", ")", "?"},
             {"-", "_", "=", "+", ":", ";", "'", "\"", ",", BACK},
             {"~", "`", "|", "\\", "<", ">", "[", "]", "{", "}"},
-            {LETTERS, ".com", "/", MIC, SPACE, ".", HIDE, GO},
+            {LETTERS, ".com", "/", MIC, PHONE, SPACE, ".", HIDE, GO},
     };
     /** Width of a key in units, ten units to a row. */
     private static float units(String k) {
         switch (k) {
-            case SPACE: return 2f;
+            case SPACE: return 1.5f;
             case GO: return 1.5f;
-            case SYMBOLS: case LETTERS: case ".com": return 1.25f;
             default: return 1f;
         }
     }
@@ -66,7 +67,10 @@ final class Keyboard extends FrameLayout {
     private final LinearLayout rows;
     private final Frost frost;
     private int size = 1;
-    private Runnable mic;
+    private Runnable mic, phone;
+    /** Pages from history that match what's typed, as {label, address}; shown in a strip above the keys. */
+    private List<String[]> suggestions = new ArrayList<>();
+    private java.util.function.Consumer<String> onPick;
     private final List<List<View>> keys = new ArrayList<>();
     private Target target;
     private boolean symbols, shift;
@@ -74,11 +78,12 @@ final class Keyboard extends FrameLayout {
 
     Keyboard(Context c) {
         super(c);
-        setClickable(true);
-        // Frosted, attached to the bottom edge: rounded only at the top.
+        // Frosted glass the size of the keys, a little above the bottom edge and rounded all round;
+        // only the glass takes clicks, so the page either side of it still gets the pointer.
         frost = new Frost(c);
         float r = dp(24);
-        frost.corners(r, r, 0, 0);
+        frost.corners(r, r, r, r);
+        frost.dense();
         frost.setClickable(true);
         LinearLayout panel = new LinearLayout(c);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -93,8 +98,10 @@ final class Keyboard extends FrameLayout {
         rows = new LinearLayout(c);
         rows.setOrientation(LinearLayout.VERTICAL);
         panel.addView(rows, new LinearLayout.LayoutParams(dp(WIDTH[size]), -2));
-        frost.addView(panel, new LayoutParams(-1, -2));
-        addView(frost, new LayoutParams(-1, -2, Gravity.BOTTOM));
+        frost.addView(panel, new LayoutParams(-2, -2));
+        LayoutParams fl = new LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        fl.bottomMargin = dp(16);
+        addView(frost, fl);
         build();
     }
 
@@ -102,6 +109,32 @@ final class Keyboard extends FrameLayout {
     void setBackdrop(android.graphics.Bitmap b) { frost.setBackdrop(b); }
 
     void setMic(Runnable r) { mic = r; }
+
+    /** The phone key: hands typing to the TV's own keyboard, which a phone or remote keyboard can type into. */
+    void setPhone(Runnable r) { phone = r; }
+
+    void setOnPick(java.util.function.Consumer<String> r) { onPick = r; }
+
+    /** New suggestions for what's typed; the selection stays on the same key. */
+    void suggest(List<String[]> s) {
+        if (s == null) s = new ArrayList<>();
+        if (same(s, suggestions)) return;
+        int before = suggestions.isEmpty() ? 0 : 1, after = s.isEmpty() ? 0 : 1;
+        if (before == 1 && row == 0) {
+            // On the strip: stay on it, or drop to the number row (row 0 once the strip goes).
+            if (after == 1) col = Math.min(col, s.size() - 1);
+        } else {
+            row = Math.max(0, row + after - before);
+        }
+        suggestions = s;
+        build();
+    }
+
+    private static boolean same(List<String[]> a, List<String[]> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) if (!a.get(i)[1].equals(b.get(i)[1])) return false;
+        return true;
+    }
 
     void setSize(int s) {
         size = Math.max(0, Math.min(SIZES.length - 1, s));
@@ -170,6 +203,20 @@ final class Keyboard extends FrameLayout {
         rows.removeAllViews();
         keys.clear();
         String[][] layout = symbols ? SYMBOL_ROWS : LETTER_ROWS;
+        if (!suggestions.isEmpty()) {
+            // Up from the number row: pages from history, OK opens one.
+            LinearLayout line = new LinearLayout(getContext());
+            List<View> inRow = new ArrayList<>();
+            for (int i = 0; i < suggestions.size(); i++) {
+                View v = chipView(i);
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(KEY_H[size]), 1f);
+                p.setMargins(dp(2), dp(2), dp(2), dp(6));
+                line.addView(v, p);
+                inRow.add(v);
+            }
+            rows.addView(line, new LinearLayout.LayoutParams(-1, -2));
+            keys.add(inRow);
+        }
         for (String[] r : layout) {
             LinearLayout line = new LinearLayout(getContext());
             line.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -194,13 +241,14 @@ final class Keyboard extends FrameLayout {
     private View keyView(String k) {
         Context c = getContext();
         boolean special = k.equals(SHIFT) || k.equals(BACK) || k.equals(SYMBOLS) || k.equals(LETTERS)
-                || k.equals(GO) || k.equals(".com") || k.equals(HIDE) || k.equals(MIC);
+                || k.equals(GO) || k.equals(".com") || k.equals(HIDE) || k.equals(MIC) || k.equals(PHONE);
         int ink = k.equals(GO) ? Ui.BG : special ? Ui.TEXT_2 : Ui.TEXT;
         // Ink turns dark on the lime key.
         ColorStateList inks = inks(k.equals(SHIFT) && shift ? Ui.TEXT : k.equals(SPACE) ? Ui.TEXT_3 : ink);
         View v;
         int icon = k.equals(SHIFT) ? R.drawable.ic_shift : k.equals(BACK) ? R.drawable.ic_backspace
-                : k.equals(HIDE) ? R.drawable.ic_keyboard_hide : k.equals(MIC) ? R.drawable.ic_mic : 0;
+                : k.equals(HIDE) ? R.drawable.ic_keyboard_hide : k.equals(MIC) ? R.drawable.ic_mic
+                : k.equals(PHONE) ? R.drawable.ic_phone : 0;
         if (icon != 0) {
             ImageView i = new ImageView(c);
             i.setImageResource(icon);
@@ -231,6 +279,27 @@ final class Keyboard extends FrameLayout {
         return v;
     }
 
+    /** A suggestion: the page's title, its site under it, on a key the full width of its share of the strip. */
+    private View chipView(int i) {
+        String[] s = suggestions.get(i);
+        TextView t = Ui.text(getContext(), TEXT_SP[size] - 3, 500, Ui.TEXT);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(10), 0, dp(10), 0);
+        t.setText(s[0]);
+        t.setTextColor(inks(Ui.TEXT));
+        android.graphics.drawable.StateListDrawable bg = new android.graphics.drawable.StateListDrawable();
+        bg.addState(new int[]{android.R.attr.state_activated}, keyFill(LIME));
+        bg.addState(new int[]{android.R.attr.state_hovered}, keyFill(LIME));
+        bg.addState(new int[]{android.R.attr.state_pressed}, keyFill(LIME));
+        bg.addState(new int[]{}, keyFill(Ui.alpha(Ui.TEXT, 0.16f)));
+        t.setBackground(bg);
+        t.setClickable(true);
+        t.setOnClickListener(x -> press(PICK + i));
+        return t;
+    }
+
     private static ColorStateList inks(int rest) {
         return new ColorStateList(new int[][]{
                 {android.R.attr.state_activated}, {android.R.attr.state_hovered}, {android.R.attr.state_pressed}, {}},
@@ -253,8 +322,14 @@ final class Keyboard extends FrameLayout {
             case BACK: target.backspace(); return;
             case HIDE: close(); return;
             case MIC: if (mic != null) mic.run(); return;
+            case PHONE: if (phone != null) phone.run(); return;
             case GO: target.enter(); return;
             default:
+                if (k.startsWith(PICK)) {
+                    int i = Integer.parseInt(k.substring(1));
+                    if (onPick != null && i < suggestions.size()) onPick.accept(suggestions.get(i)[1]);
+                    return;
+                }
                 target.type(shift && k.length() == 1 ? k.toUpperCase(Locale.ROOT) : k);
                 if (shift) { shift = false; build(); }
         }

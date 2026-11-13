@@ -41,9 +41,20 @@ final class Frost extends FrameLayout {
         invalidate();
     }
 
+    /**
+     * See-through glass for the keyboard: a lightly blurred screen under a light tint, no grain, so the
+     * page still shows through.
+     */
+    private boolean dense;
+
+    void dense() {
+        dense = true;
+        tint();
+    }
+
     /** The theme's frost: dark glass over dark mode, milky glass over light. */
     void tint() {
-        tint.setColor(Ui.light ? 0xB8F5F2F1 : 0xA6141212);
+        tint.setColor(Ui.light ? (dense ? 0xBFF5F2F1 : 0xB8F5F2F1) : (dense ? 0xBF141212 : 0xA6141212));
         invalidate();
     }
 
@@ -76,11 +87,11 @@ final class Frost extends FrameLayout {
             // The position on screen includes any slide in progress, so the picture stays still behind.
             dst.set(-at[0], -at[1], root.getWidth() - at[0], root.getHeight() - at[1]);
             c.drawBitmap(backdrop, null, dst, image);
-        } else {
+        } else if (!dense) {
             c.drawColor(Ui.SURFACE);
         }
         c.drawRect(box, tint);
-        c.drawRect(box, Ui.grain());
+        if (!dense) c.drawRect(box, Ui.grain());
         c.restoreToCount(save);
     }
 }

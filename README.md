@@ -27,6 +27,9 @@ pairs with [BEESH Launcher](https://github.com/bishwofic/BeeshTVLauncher) but wo
   direction. OK clicks (hold for a long press), hovering opens menus, and pushing the pointer against
   any edge scrolls whatever is under it, inner panes included. Page Up / Down and Channel Up / Down
   scroll a screen at a time.
+- **Type with your phone**: the phone key on the keyboard hands the field to the TV's own keyboard, so
+  the Google TV app on a phone, or any keyboard paired with the TV, types into it.
+- **Suggestions from history** in a strip above the keys as you type an address; Up, then OK, opens one.
 - **One box for everything.** Type a web address to open it, or anything else to search Google,
   DuckDuckGo, Bing or Brave. The microphone button searches by voice.
 - **DNS protection**, AdGuard by default: every site is checked with the DNS service you pick (AdGuard,
@@ -87,7 +90,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 1. On the TV, open **Settings → System → About** and press OK on **Android TV OS build** seven times.
    Go back to **Settings → System → Developer options** and turn on **USB debugging**.
 2. Find the TV's IP address in **Settings → Network & Internet** (select your Wi-Fi network).
-3. Download this repo (or just `dist/BeeshTV-Browser-2.6.apk` and `install.sh`) and run:
+3. Download this repo (or just `dist/BeeshTV-Browser-2.7.apk` and `install.sh`) and run:
 
    ```bash
    ./install.sh 192.168.1.20
@@ -96,7 +99,7 @@ a Mac). Works on Android TV and Google TV running Android 9 or newer.
 `install.sh` installs the APK, lets it install its own updates, and opens it. To remove it:
 `./install.sh 192.168.1.20 --undo`.
 
-Without a computer, download `BeeshTV-Browser-2.6.apk` from the
+Without a computer, download `BeeshTV-Browser-2.7.apk` from the
 [latest release](https://github.com/bishwofic/BeeshTVBrowser/releases/latest), copy it to the TV (a USB
 stick, LocalSend, or a downloader app) and open it.
 
@@ -125,6 +128,27 @@ browser/build.sh 192.168.1.20    # builds and installs
 ```
 
 The APK is signed with `browser/debug.keystore`, created on the first build (it isn't in the repo).
+
+## Google Play build
+
+Google Play doesn't allow an app to update itself, so the Play build leaves that out:
+
+```bash
+brew install bundletool
+browser/build.sh --play          # builds dist/play/BeeshTV-Browser-<version>.aab
+```
+
+- `src-play/` has an `Updater` that never checks GitHub, compiled in place of the one in `src/`;
+  `Updater.PLAY` hides the GitHub-only rows in Settings and the first-run setup.
+- The Play manifest has no installer receiver. It keeps `REQUEST_INSTALL_PACKAGES` so downloaded
+  APKs still open in the TV's installer; declare that in the Play Console as a browser's core use.
+- The bundle is signed with an upload key, `browser/upload.keystore`, created on the first `--play`
+  build with a password you choose (`BEESH_UPLOAD_PASS` skips the prompt). Back it up and never
+  publish it. To let TVs that sideloaded the GitHub APK update from Play, give Play `debug.keystore`
+  as the app signing key when you set up Play App Signing.
+
+The Play Console also needs a privacy policy and the Data safety form (the microphone for voice
+typing, the ad-block list from GitHub).
 
 ## Credits
 

@@ -97,6 +97,12 @@ public class BrowserActivity extends Activity {
         ScriptHandler frameFix;
         /** Frames of this page with a video playing, and when each last said so (uptime ms). */
         final java.util.Map<String, Long> playing = new java.util.HashMap<>();
+        /** Its back and forward history while the page itself is unloaded (see freeze). */
+        Bundle state;
+        /** The shown tab, unloaded while the browser was away: it loads again on return. */
+        boolean frozen;
+        /** When the page in this tab started loading (uptime ms). */
+        long startedAt;
 
         String url() { return web != null && web.getUrl() != null ? web.getUrl() : url; }
         String title() { return web != null && web.getTitle() != null ? web.getTitle() : title; }
@@ -214,7 +220,7 @@ public class BrowserActivity extends Activity {
         root.addView(start, new FrameLayout.LayoutParams(-1, -1));
         cursor = new CursorView(this);
         cursor.setListener(new CursorView.Listener() {
-            @Override public void onMove(float x, float y) { hover(x, y); }
+            @Override public void onMove(float x, float y) { endTvKeyboard(); hover(x, y); }
             @Override public void onEdge(float dx, float dy) {
                 if (start.getVisibility() == View.VISIBLE) start.scrollBy(dy);
                 else mouse(MotionEvent.ACTION_SCROLL, dx, dy);
@@ -223,7 +229,7 @@ public class BrowserActivity extends Activity {
         FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-2, dp(56), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         np.bottomMargin = dp(32);
         root.addView(buildNotice(), np);
-        // Docked to the bottom edge, the full width of the screen.
+        // Along the bottom edge; the keyboard itself is a card the size of its keys.
         root.addView(keyboard, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         voice = new Voice(this);
         root.addView(voice, new FrameLayout.LayoutParams(-1, -1));
@@ -231,6 +237,16 @@ public class BrowserActivity extends Activity {
         keyboard.setMic(() -> {
             Keyboard.Target t = keyboardTarget;
             listen(text -> { if (t != null) t.type(text); });
+        });
+        keyboard.setPhone(this::useTvKeyboard);
+        // A page from history picked above the keys: it opens, as if typed and Go pressed.
+        keyboard.setOnPick(url -> {
+            Object f = keyboard.getTag();
+            Keyboard.Target t = keyboardTarget;
+            if (!(f instanceof EditText) || t == null) return;
+            ((EditText) f).setText(url);
+            ((EditText) f).setSelection(url.length());
+            t.enter();
         });
         int c = CursorView.sizePx(this);
         root.addView(cursor, new FrameLayout.LayoutParams(c, c, Gravity.TOP | Gravity.START));
@@ -339,30 +355,92 @@ public class BrowserActivity extends Activity {
         return t;
     }
 
-    /** Shows a tab; the one it replaces stops playing and is paused, so it can't slow this one down. */
+    /**
+     * Shows a tab. The one it replaces is unloaded (its history kept), so only the page on screen
+     * holds memory: a TV has under 2 GB for everything, and each page kept loaded costs 100 MB or more.
+     * Going back to a tab loads its page again.
+     */
     private void select(Tab t) {
-        if (tab != null && tab != t && tab.web != null) {
-            WebView old = tab.web;
-            old.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
-            old.onPause();
-            old.setVisibility(View.INVISIBLE);
-            old.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true);
-        }
+        if (tab != null && tab != t) freeze(tab, false);
         tab = t;
         if (t.web == null) {
             t.web = buildWebView(t);
             pages.addView(t.web, new FrameLayout.LayoutParams(-1, -1));
-            if (t.url != null) {
-                applyAgentFor(t.web, t.url);
-                t.web.loadUrl(t.url);
-            }
         }
+        if (t.frozen || t.web.getUrl() == null) thaw(t);
         web = t.web;
         web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         web.onResume();
         web.setVisibility(View.VISIBLE);
         refreshBar();
         stayAwake();
+    }
+
+    /**
+     * Unloads a tab's page, keeping its address and back/forward history. A tab in the background
+     * lets go of its WebView altogether; the shown one (keep) gets a fresh, empty one, so the screen
+     * always has a page view, and loads again when the browser comes back (thaw).
+     */
+    private void freeze(Tab t, boolean keep) {
+        if (t.web == null) return;
+        if (t.frozen) {
+            // Already unloaded; a background tab doesn't need even the empty view.
+            if (!keep) { pages.removeView(t.web); t.web.destroy(); t.web = null; }
+            return;
+        }
+        String u = t.url(), title = t.title();
+        Bundle state = new Bundle();
+        t.state = !t.empty() && t.web.saveState(state) != null ? state : null;
+        t.url = t.empty() ? null : u;
+        t.title = title;
+        t.playing.clear();
+        pages.removeView(t.web);
+        t.web.destroy();
+        t.web = null;
+        if (keep) {
+            t.web = buildWebView(t);
+            // Nothing in it: Android may end its page process whenever it needs the memory.
+            t.web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true);
+            t.web.setVisibility(t == tab ? View.VISIBLE : View.INVISIBLE);
+            pages.addView(t.web, new FrameLayout.LayoutParams(-1, -1));
+            t.frozen = true;
+            if (t == tab) web = t.web;
+        }
+    }
+
+    /** Loads a tab's page again: its history as it was, or just its address. */
+    private void thaw(Tab t) {
+        t.frozen = false;
+        if (t == tab) t.web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        if (t.url == null) return;
+        applyAgentFor(t.web, t.url);
+        if (t.state == null || t.web.restoreState(t.state) == null) t.web.loadUrl(t.url);
+        t.state = null;
+    }
+
+    /** Away from the browser this long, the page on screen is unloaded too; it loads again on return. */
+    private static final long FREEZE_AFTER_MS = 60_000;
+    private final Runnable freezeAll = () -> { for (Tab x : tabs) freeze(x, x == tab); };
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        main.removeCallbacks(freezeAll);
+        if (tab != null && tab.frozen) thaw(tab);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        main.removeCallbacks(freezeAll);
+        main.postDelayed(freezeAll, FREEZE_AFTER_MS);
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        // The TV is short of memory while the browser is out of sight: let the page go now.
+        if (level >= TRIM_MEMORY_BACKGROUND) { main.removeCallbacks(freezeAll); freezeAll.run(); }
     }
 
     void switchTab(Tab t) {
@@ -424,9 +502,11 @@ public class BrowserActivity extends Activity {
      * keyboard or from ours (shown when a field on the page takes focus).
      */
     static final class PageView extends WebView {
+        /** The TV's own keyboard may type here (the phone key on ours): see useTvKeyboard. */
+        boolean ime;
         PageView(android.content.Context c) { super(c); }
-        @Override public InputConnection onCreateInputConnection(EditorInfo out) { return null; }
-        @Override public boolean onCheckIsTextEditor() { return false; }
+        @Override public InputConnection onCreateInputConnection(EditorInfo out) { return ime ? super.onCreateInputConnection(out) : null; }
+        @Override public boolean onCheckIsTextEditor() { return ime && super.onCheckIsTextEditor(); }
     }
 
     /** Called by assets/frames.js: a text field on the page gained or lost focus, or a request is due. */
@@ -507,6 +587,14 @@ public class BrowserActivity extends Activity {
                 Uri u = r.getUrl();
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
                 if (!scheme.equals("http") && !scheme.equals("https")) return openElsewhere(u.toString());
+                // A page sending the whole tab to an ad (a click on a stream's player, often): it stays.
+                // When the page was only a stop on the way ("Redirecting…", a link that's really an ad),
+                // the tab goes back to where you clicked, rather than sit on an empty page.
+                if (r.isForMainFrame() && !sameSite(u.getHost(), t.host) && adHost(t, u.getHost())) {
+                    blockedJump(t, u.getHost(), "an ad");
+                    if (SystemClock.uptimeMillis() - t.startedAt < 5000 && v.canGoBack()) v.goBack();
+                    return true;
+                }
                 // Never the phone version of a site.
                 if (r.isForMainFrame()) {
                     String full = fullSite(u.toString());
@@ -531,6 +619,7 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
+                t.startedAt = SystemClock.uptimeMillis();
                 t.host = hostOf(url);
                 t.blocked.set(0);
                 t.playing.clear();
@@ -579,20 +668,45 @@ public class BrowserActivity extends Activity {
             /**
              * window.open and target=_blank. A click on a link opens it here, in this tab; anything a
              * page opens on its own is a pop-up, dropped while pop-ups are blocked.
+             *
+             * Streaming sites lay an invisible link over the player, so the first click on Play opens an
+             * ad. Where that would take this tab off the page, it's dropped: an ad or tracker host, any
+             * other site from a page with a video player, or an app link. Links within a site, and to
+             * other sites from pages without a player, open as before.
              */
             @Override
             public boolean onCreateWindow(WebView v, boolean dialog, boolean userGesture, android.os.Message result) {
                 if (!userGesture && popupsBlocked()) return false;
                 WebView catcher = new WebView(BrowserActivity.this);
+                boolean[] done = {false};
                 catcher.setWebViewClient(new WebViewClient() {
                     @Override public boolean shouldOverrideUrlLoading(WebView c, WebResourceRequest r) {
-                        String u = r.getUrl().toString();
-                        applyAgentFor(v, u);
-                        v.loadUrl(u);
-                        c.destroy();
+                        if (done[0]) return true;
+                        done[0] = true;
+                        Uri target = r.getUrl();
+                        String u = target.toString(), h = target.getHost();
+                        String scheme = target.getScheme() == null ? "" : target.getScheme();
+                        main.post(c::destroy);
+                        if (!scheme.equals("http") && !scheme.equals("https") || adHost(t, h)) {
+                            blockedJump(t, h != null ? h : scheme, "a pop-up");
+                        } else if (sameSite(h, t.host) || !popupsBlocked() || adsAllowed(t.host)) {
+                            applyAgentFor(v, u);
+                            v.loadUrl(u);
+                        } else {
+                            v.evaluateJavascript(HAS_PLAYER, has -> {
+                                if ("true".equals(has)) { blockedJump(t, h, "a pop-up"); return; }
+                                applyAgentFor(v, u);
+                                v.loadUrl(u);
+                            });
+                        }
                         return true;
                     }
                 });
+                // To the page, its window opened, as in any browser: it loses focus for a moment
+                // (assets/frames.js), so a player that waits on its ad going up starts playing.
+                if (popupsBlocked()) v.evaluateJavascript("window.__beeshtvPopped && window.__beeshtvPopped()", null);
+                // A pop-up that never goes anywhere (written into by its opener) is let go of.
+                main.postDelayed(() -> { if (!done[0]) { done[0] = true; catcher.destroy(); } }, 10_000);
                 ((WebView.WebViewTransport) result.obj).setWebView(catcher);
                 result.sendToTarget();
                 return true;
@@ -700,13 +814,14 @@ public class BrowserActivity extends Activity {
         int hover = Ui.alpha(fg, 0.12f), selected = Ui.alpha(fg, 0.08f);
         for (ImageView b : barButtons) {
             b.setBackground(Ui.surface(this, 10, 0, hover, selected));
-            b.setImageTintList(ColorStateList.valueOf(Ui.alpha(fg, b == shieldBtn && !shielded() ? 0.45f : 0.8f)));
+            // What's switched on is red (blocking on this site, the desktop site), so it can be seen at a glance.
+            boolean on = b == shieldBtn ? shielded() : b == desktopBtn && tab != null && desktopFor(tab.host);
+            b.setImageTintList(ColorStateList.valueOf(on ? Ui.RED : Ui.alpha(fg, b == shieldBtn ? 0.45f : 0.8f)));
         }
         address.setBackground(Ui.surface(this, 10, Ui.alpha(fg, 0.07f), hover, selected));
         address.setTextColor(fg);
         address.setHintTextColor(Ui.alpha(fg, 0.5f));
         address.setCompoundDrawablesRelative(Ui.icon(this, R.drawable.ic_search, Ui.alpha(fg, 0.5f), 16), null, null, null);
-        blockedCount.setTextColor(Ui.alpha(fg, 0.55f));
         tabCount.setTextColor(Ui.alpha(fg, 0.55f));
         updateBtn.setTextColor(fg);
         updateBtn.setBackground(Ui.surface(this, 8, Ui.alpha(fg, 0.08f), hover, selected));
@@ -726,6 +841,42 @@ public class BrowserActivity extends Activity {
     }
 
     private boolean adsAllowed(String host) { return host != null && sp.getBoolean("ads_ok:" + host, false); }
+
+    /** An ad or tracker host, while ads are blocked on the tab's site. */
+    private boolean adHost(Tab t, String host) {
+        return host != null && adblock.enabled() && !adsAllowed(t.host)
+                && (adblock.blocks(host) || dns.blocks(host, false));
+    }
+
+    /** The page has a video player, in itself or in a frame: a pop-up from it is almost always an ad. */
+    private static final String HAS_PLAYER = "!!document.querySelector('video,iframe[allowfullscreen],"
+            + "iframe[allow*=\"autoplay\"],iframe[allow*=\"fullscreen\"],iframe[src*=\"embed\"],iframe[src*=\"player\"]')";
+
+    /** A pop-up or jump to an ad, kept from the tab: counted with the rest, and said once. */
+    private void blockedJump(Tab t, String host, String what) {
+        int n = t.blocked.incrementAndGet();
+        main.post(() -> {
+            if (t != tab) return;
+            showBlocked(n);
+            long now = SystemClock.uptimeMillis();
+            if (now - lastJumpToast > 4000) { lastJumpToast = now; toast("Blocked " + what + (host == null ? "" : " to " + host)); }
+        });
+    }
+    private long lastJumpToast;
+
+    /** Same website: example.com, www.example.com and player.example.com; example.co.uk alike. */
+    static boolean sameSite(String a, String b) {
+        return a != null && b != null && site(a).equals(site(b));
+    }
+
+    private static String site(String host) {
+        String[] p = host.toLowerCase(java.util.Locale.ROOT).split("\\.");
+        int n = p.length;
+        if (n <= 2) return host.toLowerCase(java.util.Locale.ROOT);
+        // Two-part endings such as co.uk and com.au keep one more label.
+        int keep = p[n - 1].length() == 2 && p[n - 2].length() <= 3 ? 3 : 2;
+        return String.join(".", java.util.Arrays.copyOfRange(p, n - keep, n));
+    }
 
     /** intent:, market:, mailto: and the like go to whatever app handles them, if any. */
     private boolean openElsewhere(String url) {
@@ -957,7 +1108,9 @@ public class BrowserActivity extends Activity {
     // ---- standalone setup: default browser, microphone, updates
 
     boolean isDefaultBrowser() {
-        android.app.role.RoleManager rm = getSystemService(android.app.role.RoleManager.class);
+        // Roles are Android 10 on; before that, whichever app answers web links is the browser.
+        android.app.role.RoleManager rm = android.os.Build.VERSION.SDK_INT >= 29
+                ? getSystemService(android.app.role.RoleManager.class) : null;
         if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
             return rm.isRoleHeld(android.app.role.RoleManager.ROLE_BROWSER);
         }
@@ -967,7 +1120,9 @@ public class BrowserActivity extends Activity {
     }
 
     void askDefaultBrowser() {
-        android.app.role.RoleManager rm = getSystemService(android.app.role.RoleManager.class);
+        // Roles are Android 10 on; before that, whichever app answers web links is the browser.
+        android.app.role.RoleManager rm = android.os.Build.VERSION.SDK_INT >= 29
+                ? getSystemService(android.app.role.RoleManager.class) : null;
         try {
             if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
                 startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_BROWSER), REQ_ROLE);
@@ -1053,13 +1208,20 @@ public class BrowserActivity extends Activity {
         long now = SystemClock.uptimeMillis();
         tab.playing.values().removeIf(at -> now - at > PLAYING_FOR_MS);
         boolean on = fullscreen != null || !tab.playing.isEmpty();
-        if (on) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Only when it changes: setting a window flag lays the whole window out again, and players say
+        // they're playing every few seconds (and after every stall), which showed as a hitch each time.
+        if (on != awake) {
+            awake = on;
+            if (on) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         // A frame that goes away mid-video never says it stopped; its word runs out instead.
         if (!tab.playing.isEmpty()) main.postDelayed(recheckAwake, PLAYING_FOR_MS / 2);
     }
 
     private final Runnable recheckAwake = this::stayAwake;
+    /** Whether the screen is being kept on now. */
+    private boolean awake;
 
     // ---------------------------------------------------------------- notices, full screen, downloads
 
@@ -1426,14 +1588,30 @@ public class BrowserActivity extends Activity {
                 && Character.isLetter(e.getUnicodeChar());
     }
 
-    /** Our fields use our keyboard, never the TV's. Called for the address and the fields on Home. */
+    /**
+     * Our fields use our keyboard, not the TV's (unless handed over with the phone key). Called for the
+     * address and the fields on Home. As you type, pages from history that match show above the keys.
+     */
     void attachKeyboard(EditText field, Runnable onLeave) {
         field.setShowSoftInputOnFocus(false);
+        ownFields.add(field);
         field.setOnFocusChangeListener((v, has) -> {
-            if (has && !physicalKeyboard) showKeyboard(fieldTarget(field));
+            if (has && !physicalKeyboard && !tvKeyboard) showKeyboard(fieldTarget(field));
             if (!has) {
+                endTvKeyboard();
                 if (keyboard.isOpen() && keyboard.getTag() == field) keyboard.close();
                 if (onLeave != null) onLeave.run();
+            }
+        });
+        field.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable s) {
+                if (keyboard.getTag() != field || !field.hasFocus()) return;
+                String t = s.toString();
+                // The page's own address, as the bar shows it on entering, isn't something typed.
+                boolean shownUrl = field == address && tab != null && t.equals(shown(tab.url()));
+                keyboard.suggest(shownUrl ? null : history.match(t, 4));
             }
         });
         // Clicking a field that already has focus brings the keyboard back after it was put away.
@@ -1442,9 +1620,10 @@ public class BrowserActivity extends Activity {
 
     private Keyboard.Target keyboardTarget;
 
-    /** Our keyboard, frosted over whatever is on screen as it opens. */
+    /** Our keyboard: see-through glass over the page, lightly blurred. */
     private void showKeyboard(Keyboard.Target t) {
-        if (!keyboard.isOpen()) keyboard.setBackdrop(frostedScreen());
+        if (!keyboard.isOpen()) keyboard.setBackdrop(screenShot(2, true));
+        keyboard.suggest(null);
         keyboardTarget = t;
         keyboard.show(t);
     }
@@ -1460,8 +1639,11 @@ public class BrowserActivity extends Activity {
      * A blurred, small picture of the screen as it is now, for frosted surfaces to show behind them.
      * The page is drawn in software for this one picture; video and other surfaces come out dark.
      */
-    android.graphics.Bitmap frostedScreen() {
-        int w = Math.max(1, root.getWidth() / 6), h = Math.max(1, root.getHeight() / 6);
+    android.graphics.Bitmap frostedScreen() { return screenShot(6, false); }
+
+    /** The screen at 1/div size, frosted, or lightly blurred (soft) for see-through glass. */
+    private android.graphics.Bitmap screenShot(int div, boolean soft) {
+        int w = Math.max(1, root.getWidth() / div), h = Math.max(1, root.getHeight() / div);
         try {
             android.graphics.Bitmap small = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
             android.graphics.Canvas c = new android.graphics.Canvas(small);
@@ -1472,7 +1654,7 @@ public class BrowserActivity extends Activity {
             root.draw(c);
             if (k) keyboard.setVisibility(View.VISIBLE);
             if (cur) cursor.setVisibility(View.VISIBLE);
-            android.graphics.Bitmap out = Backdrop.blur(small, 0.75f);
+            android.graphics.Bitmap out = soft ? Backdrop.soft(small) : Backdrop.blur(small, 0.75f);
             small.recycle();
             return out;
         } catch (RuntimeException | OutOfMemoryError e) {
@@ -1497,13 +1679,57 @@ public class BrowserActivity extends Activity {
             @Override public void enter() { f.onEditorAction(EditorInfo.IME_ACTION_GO); }
             @Override public void closed() {
                 keyboard.setTag(null);
-                if (!f.hasFocus()) return;
+                if (!f.hasFocus() || handingOver) return;
                 if (f == address) exitBar(); else root.requestFocus();
             }
         };
     }
 
-    private final Runnable pageFieldLeft = () -> { if (keyboard.isOpen() && keyboard.getTag() == this.pageTarget) keyboard.close(); };
+    private final Runnable pageFieldLeft = () -> {
+        endTvKeyboard();
+        if (keyboard.isOpen() && keyboard.getTag() == this.pageTarget) keyboard.close();
+    };
+
+    /** Fields of ours (the address, Home's search), which go back to our keyboard after a handover. */
+    private final List<EditText> ownFields = new ArrayList<>();
+    /** The TV's own keyboard has the field (the phone key), until it's left. */
+    private boolean tvKeyboard, handingOver;
+
+    /**
+     * The phone key: the field goes to the TV's own keyboard, so the Google TV app on a phone, or any
+     * keyboard the TV has as a remote, can type into it. The TV's keyboard comes up on screen too. Ours
+     * is back for the next field, or once the pointer moves again.
+     */
+    private void useTvKeyboard() {
+        Object tag = keyboard.getTag();
+        View field = tag instanceof EditText ? (View) tag : keyboardTarget == pageTarget ? web : null;
+        if (field == null) return;
+        tvKeyboard = true;
+        handingOver = true;
+        keyboard.close();
+        handingOver = false;
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+        if (field instanceof EditText) ((EditText) field).setShowSoftInputOnFocus(true);
+        if (field instanceof PageView) ((PageView) field).ime = true;
+        field.requestFocus();
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        if (imm == null) return;
+        imm.restartInput(field);
+        field.postDelayed(() -> imm.showSoftInput(field, InputMethodManager.SHOW_FORCED), 120);
+        toast("Type on your phone (Google TV app) or on the TV's keyboard");
+    }
+
+    private void endTvKeyboard() {
+        if (!tvKeyboard) return;
+        tvKeyboard = false;
+        InputMethodManager imm = getSystemService(InputMethodManager.class);
+        View f = getCurrentFocus();
+        if (imm != null && f != null) imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
+        for (EditText e : ownFields) e.setShowSoftInputOnFocus(false);
+        for (Tab t : tabs) if (t.web instanceof PageView) ((PageView) t.web).ime = false;
+        if (imm != null && web != null) imm.restartInput(web);
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+    }
 
     /** A field on the page took focus: our keyboard comes up (not over our own screens). */
     private void pageFieldFocused(Tab t, boolean has) {
@@ -1514,6 +1740,7 @@ public class BrowserActivity extends Activity {
             main.postDelayed(pageFieldLeft, 300);
             return;
         }
+        if (tvKeyboard) return;
         if (physicalKeyboard || start.getVisibility() == View.VISIBLE || fullscreen != null) return;
         showKeyboard(pageTarget);
         keyboard.setTag(pageTarget);
@@ -1597,9 +1824,16 @@ public class BrowserActivity extends Activity {
             web.reload();
             refreshBar();
         });
-        bar.addView(shieldBtn);
-        blockedCount = Ui.figures(this, 13, 400, Ui.TEXT_3);
-        bar.addView(blockedCount, llp(-2, -2, 0f, 0, dp(4)));
+        // How many requests were blocked on this page: a small red number above the shield.
+        FrameLayout shieldBox = new FrameLayout(this);
+        shieldBox.setClipChildren(false);
+        shieldBtn.setLayoutParams(new FrameLayout.LayoutParams(dp(42), dp(42)));
+        shieldBox.addView(shieldBtn);
+        blockedCount = Ui.figures(this, 10, 700, Ui.RED);
+        FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        cl.topMargin = -dp(2);
+        shieldBox.addView(blockedCount, cl);
+        bar.addView(shieldBox, llp(dp(42), dp(42), 0f, dp(1), dp(1)));
         desktopBtn = button(R.drawable.ic_tv, "TV site", v -> toggleDesktop());
         bar.addView(desktopBtn);
         bar.addView(button(R.drawable.ic_zoom_out, "Zoom out", v -> stepZoom(-1)));
